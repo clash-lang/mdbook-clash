@@ -12,6 +12,7 @@ Within a `clash` block:
 
 - `>>>` doctest examples trigger simulation.
 - `topEntity=...` triggers synthesis to Verilog.
+- `group=...` combines definitions from multiple blocks.
 - If both are present, both checks run.
 
 ## Installation
@@ -128,6 +129,40 @@ double x = x + x
 
 `Clash.Prelude` is implicitly in scope. The doctest parser currently supports
 single-line expressions and single-line expected output.
+
+## Grouped code blocks
+
+Give several blocks the same `group` identifier when an example is easier to
+explain in stages but should be checked as one program. Groups are local to a
+chapter. `id=...` is accepted as an alias for `group=...`.
+
+````md
+```haskell,clash group=counter
+offset :: Unsigned 8
+offset = 1
+```
+
+```haskell,clash group=counter topEntity=increment
+increment x = x + offset
+
+>>> increment 4
+5
+```
+
+```haskell,clash group=counter topEntity=decrement
+decrement x = x - offset
+
+>>> decrement 4
+3
+```
+````
+
+The blocks are concatenated in chapter order. Simulation compiles one test
+executable for the complete group, then runs it separately for every block that
+contains doctests. This preserves block-specific failure locations without
+recompiling shared definitions. Each block with `topEntity=...` is synthesized
+separately from the complete group, and its Yosys/netlistsvg options apply only
+to that block.
 
 ## Synthesis examples
 

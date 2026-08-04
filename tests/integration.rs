@@ -1045,3 +1045,148 @@ increment x = x + 1
         "{main_source}"
     );
 }
+
+#[test]
+fn grouped_blocks_compile_once_run_per_doctest_block_and_synthesize_independently() {
+    let temp = TempDir::new().expect("tempdir");
+    let ghc_calls = temp.path().join("ghc-calls.txt");
+    let simulation_calls = temp.path().join("simulation-calls.txt");
+    let generated_main = temp.path().join("group-main.hs");
+    let clash_calls = temp.path().join("clash-calls.txt");
+    let synth_prefix = temp.path().join("synth-source");
+    let fake_clash = temp.path().join("fake-clash");
+    let fake_ghc = temp.path().join("fake-ghc");
+
+    write_executable(
+        &fake_ghc,
+        &format!(
+            r#"#!/usr/bin/env sh
+set -eu
+printf 'ghc\n' >> '{}'
+src=
+out=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -o)
+      shift
+      out="$1"
+      ;;
+    *.hs)
+      src="$1"
+      ;;
+  esac
+  shift || true
+done
+cp "$src" '{}'
+printf '#!/usr/bin/env sh\nprintf "%%s\\n" "$MDBOOK_CLASH_BLOCK" >> "{}"\n' > "$out"
+chmod +x "$out"
+"#,
+            ghc_calls.display(),
+            generated_main.display(),
+            simulation_calls.display(),
+        ),
+    );
+    write_executable(
+        &fake_clash,
+        &format!(
+            r#"#!/usr/bin/env sh
+set -eu
+printf 'clash\n' >> '{}'
+src=
+out=
+top=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    *.hs)
+      src="$1"
+      ;;
+    -main-is)
+      shift
+      top="$1"
+      ;;
+    -outputdir)
+      shift
+      out="$1"
+      ;;
+  esac
+  shift || true
+done
+cp "$src" '{}-'"$top"'.hs'
+mkdir -p "$out"
+printf 'module %s(); endmodule\n' "$top" > "$out/$top.v"
+printf '{{"top_component":{{"name":"%s"}}}}\n' "$top" > "$out/clash-manifest.json"
+"#,
+            clash_calls.display(),
+            synth_prefix.display(),
+        ),
+    );
+
+    let ctx = make_context(temp.path(), &fake_clash, &fake_ghc);
+    let book = make_book(
+        r#"
+```haskell,clash group=counter
+offset :: Unsigned 8
+offset = 1
+```
+
+```haskell,clash id=counter topEntity=increment
+increment x = x + offset
+
+>>> increment 4
+5
+```
+
+```haskell,clash group=counter topEntity=decrement
+decrement x = x - offset
+
+>>> decrement 4
+3
+```
+"#,
+    );
+
+    ClashPreprocessor
+        .run(&ctx, book)
+        .expect("grouped blocks should succeed");
+
+    assert_eq!(
+        fs::read_to_string(&ghc_calls)
+            .expect("read GHC calls")
+            .lines()
+            .count(),
+        1,
+        "a group should be compiled once"
+    );
+    assert_eq!(
+        fs::read_to_string(&simulation_calls)
+            .expect("read simulation calls")
+            .lines()
+            .collect::<Vec<_>>(),
+        ["2", "3"],
+        "each doctest block should be run separately"
+    );
+    assert_eq!(
+        fs::read_to_string(&clash_calls)
+            .expect("read Clash calls")
+            .lines()
+            .count(),
+        2,
+        "each top entity should be synthesized separately"
+    );
+
+    let main = fs::read_to_string(generated_main).expect("read grouped Main module");
+    assert!(main.contains("offset = 1"), "{main}");
+    assert!(main.contains("increment x = x + offset"), "{main}");
+    assert!(main.contains("decrement x = x - offset"), "{main}");
+    assert!(main.contains("P.Just \"2\" -> do"), "{main}");
+    assert!(main.contains("P.Just \"3\" -> do"), "{main}");
+
+    for top in ["increment", "decrement"] {
+        let source = fs::read_to_string(temp.path().join(format!("synth-source-{top}.hs")))
+            .expect("read grouped synthesis module");
+        assert!(source.contains("offset = 1"), "{source}");
+        assert!(source.contains("increment x = x + offset"), "{source}");
+        assert!(source.contains("decrement x = x - offset"), "{source}");
+        assert!(!source.contains(">>>"), "{source}");
+    }
+}

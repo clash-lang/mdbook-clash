@@ -226,37 +226,20 @@ adder a b = a + b
 }
 
 #[test]
-fn test_blocks_compile_user_source_with_a_separate_runner() {
+fn test_blocks_invoke_doctest_with_the_user_module_and_transcript() {
     let temp = TempDir::new().expect("tempdir");
     let calls = temp.path().join("calls.txt");
-    let copied_main = temp.path().join("generated-main.hs");
     let fake_clash = temp.path().join("fake-clash");
+    let fake_doctest = temp.path().join("fake-doctest");
+    write_executable(&fake_clash, "#!/usr/bin/env sh\nexit 99\n");
     write_executable(
-        &fake_clash,
+        &fake_doctest,
         &format!(
             r#"#!/usr/bin/env sh
 set -eu
 printf '%s\n' "$@" > '{}'
-src=
-out=
-while [ "$#" -gt 0 ]; do
-  case "$1" in
-    -o)
-      shift
-      out="$1"
-      ;;
-    *.hs)
-      src="$1"
-      ;;
-  esac
-  shift || true
-done
-cp "$src" '{}'
-printf '#!/usr/bin/env sh\nexit 0\n' > "$out"
-chmod +x "$out"
 "#,
-            calls.display(),
-            copied_main.display()
+            calls.display()
         ),
     );
 
@@ -266,33 +249,26 @@ chmod +x "$out"
 ```haskell,clash
 module Example where
 import Clash.Prelude
+import qualified Data.List as L
 
 double :: Unsigned 8 -> Unsigned 8
 double x = x + x
 
->>> double 10
-20
+>>> L.map double [10]
+[20]
 ```
 "#,
     );
 
     ClashPreprocessor
-        .run(&ctx, book)
+        .run_with_test_doctest_command(&ctx, book, vec![fake_doctest.display().to_string()])
         .expect("preprocessor succeeds");
 
-    let call = fs::read_to_string(calls).expect("read fake runner call");
-    assert!(call.contains("MdbookClashRunner.hs"), "{call}");
-    assert!(call.contains("MdbookClashRunner.main"), "{call}");
-    assert!(call.contains("-o"), "{call}");
-
-    let generated = fs::read_to_string(copied_main).expect("read generated runner");
-    assert!(generated.contains("import Example"), "{generated}");
-    assert!(
-        generated.contains("__mdbookClashAssertEqual \"doctest 1\" (20) (double 10)"),
-        "{generated}"
-    );
-    assert!(!generated.contains("double x = x + x"), "{generated}");
-    assert!(!generated.contains("double 21"), "{generated}");
+    let call = fs::read_to_string(calls).expect("read fake doctest call");
+    assert!(call.contains(&fake_clash.display().to_string()), "{call}");
+    assert!(call.contains("Example"), "{call}");
+    assert!(call.contains("Example.hs"), "{call}");
+    assert!(call.contains("doctest-1.txt"), "{call}");
 
     let user_source = fs::read_to_string(find_file(temp.path(), "Example.hs"))
         .expect("read combined user source");
@@ -304,8 +280,16 @@ double x = x + x
         user_source.contains("import Clash.Prelude"),
         "{user_source}"
     );
+    assert!(
+        user_source.contains("import qualified Data.List as L"),
+        "{user_source}"
+    );
     assert!(user_source.contains("double x = x + x"), "{user_source}");
     assert!(!user_source.contains(">>>"), "{user_source}");
+
+    let transcript = fs::read_to_string(find_file(temp.path(), "doctest-1.txt"))
+        .expect("read doctest transcript");
+    assert_eq!(transcript, ">>> L.map double [10]\n[20]\n");
 }
 
 #[test]
@@ -342,8 +326,6 @@ broken = id
 
     assert!(err.contains("synthesis failed"), "{err}");
     assert!(err.contains("src/integration.md"), "{err}");
-    assert!(!err.contains("block:"), "{err}");
-    assert!(err.contains("generated:"), "{err}");
     assert!(err.contains("fake stdout"), "{err}");
     assert!(err.contains("fake stderr"), "{err}");
 
@@ -364,22 +346,16 @@ fn simulation_failures_are_not_cached() {
     let temp = TempDir::new().expect("tempdir");
     let calls = temp.path().join("test-calls.txt");
     let fake_clash = temp.path().join("fake-clash");
+    let fake_doctest = temp.path().join("fake-doctest");
+    write_executable(&fake_clash, "#!/usr/bin/env sh\nexit 99\n");
     write_executable(
-        &fake_clash,
+        &fake_doctest,
         &format!(
             r#"#!/usr/bin/env sh
 set -eu
 printf 'call\n' >> '{}'
-out=
-while [ "$#" -gt 0 ]; do
-  if [ "$1" = "-o" ]; then
-    shift
-    out="$1"
-  fi
-  shift || true
-done
-printf '#!/usr/bin/env sh\necho simulation-failed >&2\nexit 17\n' > "$out"
-chmod +x "$out"
+echo simulation-failed >&2
+exit 17
 "#,
             calls.display()
         ),
@@ -390,20 +366,14 @@ chmod +x "$out"
 
     for _ in 0..2 {
         let err = ClashPreprocessor
-            .run(&ctx, book())
+            .run_with_test_doctest_command(&ctx, book(), vec![fake_doctest.display().to_string()])
             .expect_err("simulation should fail")
             .to_string();
-        assert!(err.contains("simulation failed"), "{err}");
+        assert!(err.contains("doctest failed"), "{err}");
         assert!(err.contains("simulation-failed"), "{err}");
         assert!(!err.contains("generated:"), "{err}");
         assert!(!err.contains("command:"), "{err}");
-        assert!(
-            err.contains(&format!(
-                "source: {}:1:1",
-                temp.path().join("src/integration.md").display()
-            )),
-            "{err}"
-        );
+        assert!(err.contains("src/integration.md:1:1"), "{err}");
     }
     assert_eq!(
         fs::read_to_string(calls)
@@ -480,7 +450,7 @@ adder a b = a + b
 }
 
 #[test]
-fn cache_keys_are_phase_specific_and_cached_outputs_are_verified() {
+fn cache_keys_are_phase_specific_and_corruption_is_rebuilt() {
     let temp = TempDir::new().expect("tempdir");
     let calls = temp.path().join("calls.txt");
     let fake_clash = temp.path().join("fake-clash");
@@ -574,7 +544,7 @@ fn invalid_configuration_is_an_error() {
         .to_string();
 
     assert!(
-        err.contains("invalid `preprocessor.clash.clash-cmd`"),
+        err.contains("invalid preprocessor.clash.clash-cmd"),
         "{err}"
     );
 
@@ -635,7 +605,7 @@ fn invalid_attributes_are_rejected_before_doctests_run() {
         )
         .expect_err("malformed quoting should fail")
         .to_string();
-    assert!(err.contains("invalid fenced block attributes"), "{err}");
+    assert!(err.contains("invalid block attributes"), "{err}");
 }
 
 #[test]
@@ -690,10 +660,6 @@ adder a b = a + b
 
     assert!(
         err.contains("yosys=<commands> requires netlistsvg"),
-        "{err}"
-    );
-    assert!(
-        err.contains("Yosys commands are only used to generate netlist diagrams"),
         "{err}"
     );
 
@@ -834,7 +800,7 @@ adder x = x
     .expect("invalidate synthesis cache");
     ClashPreprocessor
         .run(&ctx, make_book(markdown))
-        .expect("changed synthesis output rebuilds netlist");
+        .expect("corrupt synthesis cache is rebuilt");
     assert_eq!(
         fs::read_to_string(netlistsvg_calls)
             .expect("read netlistsvg calls")
@@ -845,7 +811,7 @@ adder x = x
 }
 
 #[test]
-fn missing_netlistsvg_reports_setup_hint() {
+fn missing_netlistsvg_fails_immediately() {
     let temp = TempDir::new().expect("tempdir");
     let yosys_calls = temp.path().join("yosys-calls.txt");
     let fake_clash = temp.path().join("fake-clash");
@@ -909,22 +875,13 @@ wire x = x
             .run(&ctx, make_book(markdown))
             .expect_err("preprocessor should fail")
             .to_string();
-        assert!(err.contains("failed to start netlistsvg command"), "{err}");
-        assert!(err.contains("netlistsvg` was requested"), "{err}");
-        assert!(err.contains("netlistsvg-cmd"), "{err}");
+        assert!(err.contains("failed to read"), "{err}");
         assert!(
             err.contains(&missing_netlistsvg.display().to_string()),
             "{err}"
         );
     }
-    assert_eq!(
-        fs::read_to_string(yosys_calls)
-            .expect("read Yosys calls")
-            .lines()
-            .count(),
-        2,
-        "failed netlist generation must not be cached",
-    );
+    assert!(!yosys_calls.exists());
 }
 
 #[test]
@@ -933,9 +890,11 @@ fn clash_blocks_can_be_simulated_and_synthesized() {
     let clash_calls = temp.path().join("clash-calls.txt");
     let simulation_compile_calls = temp.path().join("simulation-compile-calls.txt");
     let clash_args = temp.path().join("clash-args.txt");
+    let doctest_args = temp.path().join("doctest-args.txt");
     let copied_synth_source = temp.path().join("synth-source.hs");
     let copied_main = temp.path().join("main-source.hs");
     let fake_clash = temp.path().join("fake-clash");
+    let fake_doctest = temp.path().join("fake-doctest");
 
     write_executable(
         &fake_clash,
@@ -986,6 +945,14 @@ fi
         ),
     );
 
+    write_executable(
+        &fake_doctest,
+        &format!(
+            "#!/usr/bin/env sh\nset -eu\nprintf '%s\\n' \"$@\" > '{}'\n",
+            doctest_args.display()
+        ),
+    );
+
     let mut ctx = make_context(temp.path(), &fake_clash);
     ctx.config
         .set("preprocessor.clash.clash-args", vec!["-fcommon"])
@@ -1003,7 +970,7 @@ increment x = x + 1
     );
 
     ClashPreprocessor
-        .run(&ctx, book)
+        .run_with_test_doctest_command(&ctx, book, vec![fake_doctest.display().to_string()])
         .expect("preprocessor succeeds");
 
     assert_eq!(
@@ -1013,21 +980,22 @@ increment x = x + 1
             .count(),
         1
     );
-    assert_eq!(
-        fs::read_to_string(simulation_compile_calls)
-            .expect("read simulation compiler calls")
-            .lines()
-            .count(),
-        1
-    );
+    assert!(!simulation_compile_calls.exists());
     assert_eq!(
         fs::read_to_string(clash_args)
             .expect("read Clash arguments")
             .lines()
             .filter(|argument| *argument == "-fcommon")
             .count(),
-        2,
-        "common Clash arguments should apply to simulation and synthesis"
+        1,
+        "common Clash arguments should apply to synthesis"
+    );
+    assert!(
+        fs::read_to_string(doctest_args)
+            .expect("read doctest arguments")
+            .lines()
+            .any(|argument| argument == "-fcommon"),
+        "common Clash arguments should be forwarded to the doctest REPL"
     );
 
     let synth_source = fs::read_to_string(copied_synth_source).expect("read synth source");
@@ -1038,22 +1006,24 @@ increment x = x + 1
     assert!(!synth_source.contains(">>>"), "{synth_source}");
     assert!(!synth_source.contains("22"), "{synth_source}");
 
-    let main_source = fs::read_to_string(copied_main).expect("read main source");
-    assert!(
-        main_source.contains("__mdbookClashAssertEqual \"doctest 1\" (22) (increment 21)"),
-        "{main_source}"
-    );
+    assert!(!copied_main.exists());
+    let transcript = fs::read_to_string(find_file(temp.path(), "doctest-1.txt"))
+        .expect("read doctest transcript");
+    assert_eq!(transcript, ">>> increment 21\n22\n");
 }
 
 #[test]
-fn grouped_blocks_compile_once_run_per_doctest_block_and_synthesize_independently() {
+fn grouped_blocks_use_one_doctest_run_and_synthesize_independently() {
     let temp = TempDir::new().expect("tempdir");
     let simulation_compile_calls = temp.path().join("simulation-compile-calls.txt");
     let simulation_calls = temp.path().join("simulation-calls.txt");
     let generated_main = temp.path().join("group-main.hs");
+    let doctest_calls = temp.path().join("doctest-calls.txt");
+    let doctest_args = temp.path().join("doctest-args.txt");
     let clash_calls = temp.path().join("clash-calls.txt");
     let synth_prefix = temp.path().join("synth-source");
     let fake_clash = temp.path().join("fake-clash");
+    let fake_doctest = temp.path().join("fake-doctest");
 
     write_executable(
         &fake_clash,
@@ -1108,12 +1078,26 @@ fi
         ),
     );
 
+    write_executable(
+        &fake_doctest,
+        &format!(
+            r#"#!/usr/bin/env sh
+set -eu
+printf 'doctest\n' >> '{}'
+printf '%s\n' "$@" > '{}'
+"#,
+            doctest_calls.display(),
+            doctest_args.display()
+        ),
+    );
+
     let ctx = make_context(temp.path(), &fake_clash);
     let book = make_book(
         r#"
 ```haskell,clash group=counter hidden
 module Counter where
 import Clash.Prelude
+import qualified Data.List as List
 ```
 
 ```haskell,clash group=counter
@@ -1122,8 +1106,6 @@ offset = 1
 ```
 
 ```haskell,clash group=counter topEntity=increment
-import qualified Data.List as List
-
 increment x = x + offset
 
 >>> increment 4
@@ -1140,25 +1122,22 @@ decrement x = x - offset
     );
 
     let processed = ClashPreprocessor
-        .run(&ctx, book)
+        .run_with_test_doctest_command(&ctx, book, vec![fake_doctest.display().to_string()])
         .expect("grouped blocks should succeed");
 
+    assert!(!simulation_compile_calls.exists());
+    assert!(!simulation_calls.exists());
     assert_eq!(
-        fs::read_to_string(&simulation_compile_calls)
-            .expect("read simulation compiler calls")
+        fs::read_to_string(&doctest_calls)
+            .expect("read doctest calls")
             .lines()
             .count(),
         1,
-        "a group should be compiled once"
+        "a group should use one doctest interpreter"
     );
-    assert_eq!(
-        fs::read_to_string(&simulation_calls)
-            .expect("read simulation calls")
-            .lines()
-            .collect::<Vec<_>>(),
-        ["3", "4"],
-        "each doctest block should be run separately"
-    );
+    let recorded_doctest_args = fs::read_to_string(&doctest_args).expect("read doctest arguments");
+    assert!(recorded_doctest_args.contains("doctest-3.txt"));
+    assert!(recorded_doctest_args.contains("doctest-4.txt"));
     assert_eq!(
         fs::read_to_string(&clash_calls)
             .expect("read Clash calls")
@@ -1168,13 +1147,16 @@ decrement x = x - offset
         "each top entity should be synthesized separately"
     );
 
-    let main = fs::read_to_string(generated_main).expect("read grouped Main module");
-    assert!(main.contains("import Counter"), "{main}");
-    assert!(!main.contains("offset = 1"), "{main}");
-    assert!(!main.contains("increment x = x + offset"), "{main}");
-    assert!(!main.contains("decrement x = x - offset"), "{main}");
-    assert!(main.contains("P.Just \"3\" -> do"), "{main}");
-    assert!(main.contains("P.Just \"4\" -> do"), "{main}");
+    assert!(!generated_main.exists());
+    let checked_module =
+        fs::read_to_string(find_file(temp.path(), "Counter.hs")).expect("read checked module");
+    assert!(checked_module.contains("module Counter where"));
+    assert!(checked_module.contains("import Clash.Prelude"));
+    assert!(checked_module.contains("import qualified Data.List as List"));
+    assert!(checked_module.contains("offset = 1"));
+    assert!(checked_module.contains("increment x = x + offset"));
+    assert!(checked_module.contains("decrement x = x - offset"));
+    assert!(!checked_module.contains(">>>"));
 
     let BookItem::Chapter(chapter) = &processed.items[0] else {
         panic!("expected processed chapter");

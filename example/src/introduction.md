@@ -75,6 +75,7 @@ targets below:
 ```haskell,clash group=adjusters hidden
 module Adjusters where
 import Clash.Prelude
+import qualified Data.List as L
 ```
 
 ```haskell,clash group=adjusters
@@ -85,13 +86,11 @@ adjustment = 1
 This block is simulated independently and synthesized as `addAdjustment`:
 
 ```haskell,clash group=adjusters topEntity=addAdjustment
-import qualified Data.List as List
-
 addAdjustment :: Unsigned 8 -> Unsigned 8
 addAdjustment value = value + adjustment
 
->>> addAdjustment 41
-42
+>>> L.map addAdjustment [40, 41]
+[41,42]
 ```
 
 This block belongs to the same group, so its simulation and synthesis can use
@@ -106,5 +105,5 @@ twiceAdjusted value = addAdjustment (addAdjustment value)
 42
 ```
 
-The grouped definitions are compiled once for simulation, while the two
+The grouped definitions are loaded into one Clash interpreter, while the two
 `topEntity` attributes produce two independent Clash synthesis runs.

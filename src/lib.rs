@@ -97,9 +97,9 @@ fn process_chapter(process_context: &ProcessContext, chapter: &mut Chapter) -> R
         .as_ref()
         .cloned()
         .unwrap_or_else(|| PathBuf::from("<unknown chapter>"));
+    let chapter_path = resolve_chapter_path(process_context, &chapter_path);
 
-    let blocks = find_clash_blocks(&chapter.content)
-        .map_err(|err| Error::msg(format!("{err}\nchapter: {}", chapter_path.display())))?;
+    let blocks = find_clash_blocks(&chapter.content, &chapter_path)?;
     for block in &blocks {
         validate_block(&chapter_path, block)?;
     }
@@ -148,6 +148,34 @@ fn process_chapter(process_context: &ProcessContext, chapter: &mut Chapter) -> R
     Ok(())
 }
 
+fn resolve_chapter_path(process_context: &ProcessContext, chapter_path: &Path) -> PathBuf {
+    if chapter_path.is_absolute() || chapter_path == Path::new("<unknown chapter>") {
+        return chapter_path.to_path_buf();
+    }
+
+    let source_dir = &process_context.ctx.config.book.src;
+    if chapter_path.starts_with(source_dir) {
+        process_context.ctx.root.join(chapter_path)
+    } else {
+        process_context.ctx.root.join(source_dir).join(chapter_path)
+    }
+}
+
+fn display_source_path(path: &Path) -> String {
+    let terminal_dir = std::env::var_os("PWD")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .or_else(|| std::env::current_dir().ok());
+    if let Some(terminal_dir) = terminal_dir {
+        if let Ok(relative) = path.strip_prefix(terminal_dir) {
+            if !relative.as_os_str().is_empty() {
+                return relative.display().to_string();
+            }
+        }
+    }
+    path.display().to_string()
+}
+
 fn process_block(
     process_context: &ProcessContext,
     chapter_path: &Path,
@@ -175,12 +203,9 @@ fn validate_block(chapter_path: &Path, block: &ClashBlock) -> Result<(), Error> 
     if !block.attrs.yosys_commands.is_empty() && !block.attrs.netlistsvg {
         return Err(Error::msg(format!(
             "mdbook-clash: yosys=<commands> requires netlistsvg\n\
-             chapter: {}\n\
-             block: {}\n\
-             line: {}\n\
+             source: {}:{}:1\n\
              note: Yosys commands are only used to generate netlist diagrams",
-            chapter_path.display(),
-            block.block_index,
+            display_source_path(chapter_path),
             block.start_line
         )));
     }
@@ -188,11 +213,8 @@ fn validate_block(chapter_path: &Path, block: &ClashBlock) -> Result<(), Error> 
     if block.attrs.netlistsvg && block.attrs.top_entity.is_none() {
         return Err(Error::msg(format!(
             "mdbook-clash: netlistsvg requires topEntity=<binding>\n\
-             chapter: {}\n\
-             block: {}\n\
-             line: {}",
-            chapter_path.display(),
-            block.block_index,
+             source: {}:{}:1",
+            display_source_path(chapter_path),
             block.start_line
         )));
     }
@@ -256,7 +278,7 @@ fn synthesize_module(
     if cache_hit(process_context, &artifact_dir, "synth", &cache_key) {
         eprintln!(
             " INFO mdbook-clash: synthesis cache hit for {} block {}",
-            chapter_path.display(),
+            display_source_path(chapter_path),
             block.block_index
         );
         let top_component = read_top_component(&verilog_dir)?;
@@ -290,7 +312,7 @@ fn synthesize_module(
 
     eprintln!(
         " INFO mdbook-clash: synthesizing {} block {} line {}",
-        chapter_path.display(),
+        display_source_path(chapter_path),
         block.block_index,
         block.start_line
     );
@@ -330,7 +352,7 @@ fn synthesize_module(
 
     eprintln!(
         " INFO mdbook-clash: synthesized {} block {}",
-        chapter_path.display(),
+        display_source_path(chapter_path),
         block.block_index
     );
 
@@ -371,7 +393,7 @@ fn netlistsvg_block(
     if cache_hit(process_context, &artifact_dir, "netlistsvg", &cache_key) {
         eprintln!(
             " INFO mdbook-clash: netlistsvg cache hit for {} block {}",
-            chapter_path.display(),
+            display_source_path(chapter_path),
             block.block_index
         );
         let svg = fs::read_to_string(&svg_path)
@@ -396,12 +418,9 @@ fn netlistsvg_block(
     if verilog_files.is_empty() {
         return Err(Error::msg(format!(
             "mdbook-clash: no Verilog files found for netlistsvg\n\
-             chapter: {}\n\
-             block: {}\n\
-             line: {}\n\
+             source: {}:{}:1\n\
              verilog-dir: {}",
-            chapter_path.display(),
-            block.block_index,
+            display_source_path(chapter_path),
             block.start_line,
             synthesis.verilog_dir.display()
         )));
@@ -420,7 +439,7 @@ fn netlistsvg_block(
     let yosys_args = vec!["-s".to_string(), script_path.display().to_string()];
     eprintln!(
         " INFO mdbook-clash: running Yosys JSON export for {} block {}",
-        chapter_path.display(),
+        display_source_path(chapter_path),
         block.block_index
     );
     eprintln!(
@@ -460,7 +479,7 @@ fn netlistsvg_block(
     ];
     eprintln!(
         " INFO mdbook-clash: running netlistsvg for {} block {}",
-        chapter_path.display(),
+        display_source_path(chapter_path),
         block.block_index
     );
     eprintln!(
@@ -547,7 +566,7 @@ fn test_blocks(
     if cache_hit(process_context, &artifact_dir, "test", &cache_key) {
         eprintln!(
             " INFO mdbook-clash: simulation cache hit for {} block(s) {}",
-            chapter_path.display(),
+            display_source_path(chapter_path),
             block_indices(&test_blocks)
         );
         return Ok(());
@@ -569,7 +588,7 @@ fn test_blocks(
 
     eprintln!(
         " INFO mdbook-clash: compiling simulation for {} block(s) {}",
-        chapter_path.display(),
+        display_source_path(chapter_path),
         block_indices(blocks)
     );
     eprintln!(
@@ -606,15 +625,10 @@ fn test_blocks(
         let run_args = process_context.config.test_exe_args.clone();
         eprintln!(
             " INFO mdbook-clash: simulating {} block {} line {}",
-            chapter_path.display(),
+            display_source_path(chapter_path),
             block.block_index,
             block.start_line
         );
-        eprintln!(
-            " INFO mdbook-clash: running {}",
-            shell_join_all(&[exe_path.display().to_string()], &run_args)
-        );
-
         let run_output = run_configured_command_with_env(
             &[exe_path.display().to_string()],
             &run_args,
@@ -650,7 +664,7 @@ fn test_blocks(
 
     eprintln!(
         " INFO mdbook-clash: simulated {} block(s) {}",
-        chapter_path.display(),
+        display_source_path(chapter_path),
         block_indices(blocks)
     );
 
@@ -665,7 +679,7 @@ fn block_indices(blocks: &[&ClashBlock]) -> String {
         .join(", ")
 }
 
-fn find_clash_blocks(content: &str) -> Result<Vec<ClashBlock>, Error> {
+fn find_clash_blocks(content: &str, chapter_path: &Path) -> Result<Vec<ClashBlock>, Error> {
     let mut blocks = Vec::new();
     let mut block_index = 0usize;
     let mut active: Option<(String, usize, String)> = None;
@@ -682,7 +696,9 @@ fn find_clash_blocks(content: &str) -> Result<Vec<ClashBlock>, Error> {
                 let start_line = line_number_at_offset(content, start_offset);
                 let Some(attrs) = parse_block_info(&info).map_err(|err| {
                     Error::msg(format!(
-                        "mdbook-clash: invalid fenced block attributes at line {start_line}: {err}"
+                        "mdbook-clash: invalid fenced block attributes: {err}\n\
+                         source: {}:{start_line}:1",
+                        display_source_path(chapter_path)
                     ))
                 })?
                 else {
@@ -1143,14 +1159,11 @@ fn command_error(
 
     Error::msg(format!(
         "mdbook-clash: failed to start {mode} command\n\
-         chapter: {}\n\
-         block: {}\n\
-         line: {}\n\
+         source: {}:{}:1\n\
          generated: {}\n\
          command: {}\n\
          error: {err}{hint}",
-        chapter_path.display(),
-        block.block_index,
+        display_source_path(chapter_path),
         block.start_line,
         generated_path.display(),
         shell_join_all(cmd, args)
@@ -1166,21 +1179,24 @@ fn command_failure(
     args: &[String],
     output: &Output,
 ) -> Error {
+    let execution_details = if mode == "simulation" {
+        String::new()
+    } else {
+        format!(
+            "generated: {}\ncommand: {}\n",
+            generated_path.display(),
+            shell_join_all(cmd, args)
+        )
+    };
     Error::msg(format!(
         "mdbook-clash: {mode} failed\n\
-         chapter: {}\n\
-         block: {}\n\
-         line: {}\n\
-         generated: {}\n\
-         command: {}\n\
+         source: {}:{}:1\n\
+         {execution_details}\
          status: {}\n\
          stdout:\n{}\n\
          stderr:\n{}",
-        chapter_path.display(),
-        block.block_index,
+        display_source_path(chapter_path),
         block.start_line,
-        generated_path.display(),
-        shell_join_all(cmd, args),
         output.status,
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
@@ -1508,7 +1524,8 @@ adder x y = x + y
 ~~~
 "#;
 
-        let blocks = find_clash_blocks(content).expect("valid block attributes");
+        let blocks =
+            find_clash_blocks(content, Path::new("chapter.md")).expect("valid block attributes");
         assert_eq!(blocks.len(), 2);
         assert_eq!(blocks[0].attrs.top_entity, None);
         assert_eq!(blocks[1].attrs.top_entity.as_deref(), Some("adder"));
@@ -1555,6 +1572,16 @@ double x = x + x
         assert_eq!(
             script.last().map(String::as_str),
             Some("write_json \"/tmp/netlist.json\"")
+        );
+    }
+
+    #[test]
+    fn displays_source_paths_relative_to_the_current_directory() {
+        let current_dir = std::env::current_dir().expect("current directory");
+        let source = current_dir.join("example/src/introduction.md");
+        assert_eq!(
+            PathBuf::from(display_source_path(&source)),
+            PathBuf::from("example/src/introduction.md")
         );
     }
 

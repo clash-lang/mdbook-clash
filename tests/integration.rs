@@ -346,7 +346,7 @@ broken = id
 
     assert!(err.contains("synthesis failed"), "{err}");
     assert!(err.contains("src/integration.md"), "{err}");
-    assert!(err.contains("block: 1"), "{err}");
+    assert!(!err.contains("block:"), "{err}");
     assert!(err.contains("generated:"), "{err}");
     assert!(err.contains("fake stdout"), "{err}");
     assert!(err.contains("fake stderr"), "{err}");
@@ -401,6 +401,15 @@ chmod +x "$out"
             .to_string();
         assert!(err.contains("simulation failed"), "{err}");
         assert!(err.contains("simulation-failed"), "{err}");
+        assert!(!err.contains("generated:"), "{err}");
+        assert!(!err.contains("command:"), "{err}");
+        assert!(
+            err.contains(&format!(
+                "source: {}:1:1",
+                temp.path().join("src/integration.md").display()
+            )),
+            "{err}"
+        );
     }
     assert_eq!(
         fs::read_to_string(calls)

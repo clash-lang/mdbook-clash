@@ -1,0 +1,94 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+  schedule:
+    # Exercise the moving Clash master branch once a week, outside peak hours.
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'schedule' }}
+
+jobs:
+  releases:
+    if: github.event_name != 'schedule'
+    name: Clash ${{ matrix.clash-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        clash-version:
+          - v1.8.5
+          - v1.10.0
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Nix
+        uses: DeterminateSystems/determinate-nix-action@d96678350ffd6a456235832eb11e1c491589b7bb # v3.21.8
+        with:
+          extra-conf: |
+            extra-substituters = https://clash-lang.cachix.org
+            extra-trusted-public-keys = clash-lang.cachix.org-1:/2N1uka38B/heaOAC+Ztd/EWLmF0RLfizWgC5tamCBg=
+
+      - name: Enable Nix cache
+        uses: DeterminateSystems/flakehub-cache-action@3be0931021788e3bb4df65f59a555039c2fa2d46 # v3.21.7
+
+      - name: Select Clash ${{ matrix.clash-version }}
+        run: >-
+          nix flake lock
+          --override-input clash-compiler
+          github:clash-lang/clash-compiler/${{ matrix.clash-version }}
+
+      - name: Run tests
+        run: nix flake check --print-build-logs
+
+      - name: Build package
+        run: nix build --print-build-logs
+
+      - name: Build example book
+        run: nix develop -c mdbook build example
+
+  clash-master:
+    name: Clash master
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Nix
+        uses: DeterminateSystems/determinate-nix-action@d96678350ffd6a456235832eb11e1c491589b7bb # v3.21.8
+        with:
+          extra-conf: |
+            extra-substituters = https://clash-lang.cachix.org
+            extra-trusted-public-keys = clash-lang.cachix.org-1:/2N1uka38B/heaOAC+Ztd/EWLmF0RLfizWgC5tamCBg=
+
+      - name: Enable Nix cache
+        uses: DeterminateSystems/flakehub-cache-action@3be0931021788e3bb4df65f59a555039c2fa2d46 # v3.21.7
+
+      - name: Update Clash master
+        run: >-
+          nix flake lock
+          --override-input clash-compiler
+          github:clash-lang/clash-compiler/master
+
+      - name: Show selected Clash revision
+        run: nix flake metadata --json | jq -r '.locks.nodes["clash-compiler"].locked.rev'
+
+      - name: Run tests
+        run: nix flake check --print-build-logs
+
+      - name: Build package
+        run: nix build --print-build-logs
+
+      - name: Build example book
+        run: nix develop -c mdbook build example

@@ -313,31 +313,34 @@ double x = x + x
 #[test]
 fn command_failures_report_actionable_diagnostics() {
     let temp = TempDir::new().expect("tempdir");
+    let calls = temp.path().join("clash-calls.txt");
     let fake_clash = temp.path().join("fake-failing-clash");
     let fake_ghc = temp.path().join("fake-ghc");
     write_executable(
         &fake_clash,
-        r#"#!/usr/bin/env sh
+        &format!(
+            r#"#!/usr/bin/env sh
 set -eu
+printf 'call\n' >> '{}'
 echo "fake stdout"
 echo "fake stderr" >&2
 exit 17
 "#,
+            calls.display()
+        ),
     );
     write_executable(&fake_ghc, "#!/usr/bin/env sh\nexit 0\n");
 
     let ctx = make_context(temp.path(), &fake_clash, &fake_ghc);
-    let book = make_book(
-        r#"
+    let markdown = r#"
 ```haskell,clash topEntity=broken
 broken :: Unsigned 8 -> Unsigned 8
 broken = id
 ```
-"#,
-    );
+"#;
 
     let err = ClashPreprocessor
-        .run(&ctx, book)
+        .run(&ctx, make_book(markdown))
         .expect_err("preprocessor should fail");
     let err = err.to_string();
 
@@ -347,6 +350,65 @@ broken = id
     assert!(err.contains("generated:"), "{err}");
     assert!(err.contains("fake stdout"), "{err}");
     assert!(err.contains("fake stderr"), "{err}");
+
+    ClashPreprocessor
+        .run(&ctx, make_book(markdown))
+        .expect_err("failed synthesis must not be cached");
+    assert_eq!(
+        fs::read_to_string(calls)
+            .expect("read Clash calls")
+            .lines()
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn simulation_failures_are_not_cached() {
+    let temp = TempDir::new().expect("tempdir");
+    let calls = temp.path().join("test-calls.txt");
+    let fake_clash = temp.path().join("fake-clash");
+    let fake_ghc = temp.path().join("fake-ghc");
+    write_executable(&fake_clash, "#!/usr/bin/env sh\nexit 0\n");
+    write_executable(
+        &fake_ghc,
+        &format!(
+            r#"#!/usr/bin/env sh
+set -eu
+printf 'call\n' >> '{}'
+out=
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "-o" ]; then
+    shift
+    out="$1"
+  fi
+  shift || true
+done
+printf '#!/usr/bin/env sh\necho simulation-failed >&2\nexit 17\n' > "$out"
+chmod +x "$out"
+"#,
+            calls.display()
+        ),
+    );
+
+    let ctx = make_context(temp.path(), &fake_clash, &fake_ghc);
+    let book = || make_book("```haskell,clash\n>>> id 1\n1\n```");
+
+    for _ in 0..2 {
+        let err = ClashPreprocessor
+            .run(&ctx, book())
+            .expect_err("simulation should fail")
+            .to_string();
+        assert!(err.contains("simulation failed"), "{err}");
+        assert!(err.contains("simulation-failed"), "{err}");
+    }
+    assert_eq!(
+        fs::read_to_string(calls)
+            .expect("read test calls")
+            .lines()
+            .count(),
+        2
+    );
 }
 
 #[test]
@@ -647,25 +709,35 @@ adder a b = a + b
 fn netlistsvg_runs_yosys_json_export_and_injects_svg() {
     let temp = TempDir::new().expect("tempdir");
     let yosys_script_copy = temp.path().join("netlist.ys");
+    let netlistsvg_calls = temp.path().join("netlistsvg-calls.txt");
+    let clash_verilog = temp.path().join("clash-output.v");
     let fake_clash = temp.path().join("fake-clash");
     let fake_ghc = temp.path().join("fake-ghc");
     let fake_yosys = temp.path().join("fake-yosys");
     let fake_netlistsvg = temp.path().join("fake-netlistsvg");
 
+    fs::write(
+        &clash_verilog,
+        "module custom_adder(input a, output b); assign b = a; endmodule\n",
+    )
+    .expect("write fake Clash output");
     write_executable(
         &fake_clash,
-        r#"#!/usr/bin/env sh
+        &format!(
+            r#"#!/usr/bin/env sh
 set -eu
 while [ "$#" -gt 0 ]; do
   if [ "$1" = "-outputdir" ]; then
     shift
     mkdir -p "$1"
-    printf 'module custom_adder(input a, output b); assign b = a; endmodule\n' > "$1/custom_adder.v"
-    printf '{"top_component":{"name":"custom_adder"}}\n' > "$1/clash-manifest.json"
+    cp '{}' "$1/custom_adder.v"
+    printf '{{"top_component":{{"name":"custom_adder"}}}}\n' > "$1/clash-manifest.json"
   fi
   shift || true
 done
 "#,
+            clash_verilog.display()
+        ),
     );
     write_executable(&fake_ghc, "#!/usr/bin/env sh\nexit 0\n");
     write_executable(
@@ -690,8 +762,10 @@ printf '{{"modules":{{"topEntity":{{}}}}}}\n' > "$json"
     );
     write_executable(
         &fake_netlistsvg,
-        r#"#!/usr/bin/env sh
+        &format!(
+            r#"#!/usr/bin/env sh
 set -eu
+printf 'call\n' >> '{}'
 out=
 while [ "$#" -gt 0 ]; do
   if [ "$1" = "-o" ]; then
@@ -702,28 +776,31 @@ while [ "$#" -gt 0 ]; do
 done
 printf '<svg xmlns="http://www.w3.org/2000/svg"><text>adder netlist</text></svg>\n' > "$out"
 "#,
+            netlistsvg_calls.display()
+        ),
     );
 
-    let ctx = make_context_with_yosys_and_netlistsvg(
+    let mut ctx = make_context_with_yosys_and_netlistsvg(
         temp.path(),
         &fake_clash,
         &fake_ghc,
         &fake_yosys,
         &fake_netlistsvg,
     );
-    let book = make_book(
-        r#"
+    ctx.config
+        .set("preprocessor.clash.cache", true)
+        .expect("enable cache");
+    let markdown = r#"
 ```haskell,clash topEntity=adder yosys="proc; opt; techmap" netlistsvg
 adder :: Bit -> Bit
 adder x = x
 ```
-"#,
-    );
+"#;
 
     let out = ClashPreprocessor
-        .run(&ctx, book)
+        .run(&ctx, make_book(markdown))
         .expect("preprocessor succeeds");
-    let content = &out.chapters().next().expect("chapter").content;
+    let rendered = &out.chapters().next().expect("chapter").content;
     let script = fs::read_to_string(yosys_script_copy).expect("read copied Yosys script");
 
     assert!(script.contains("read_verilog"), "{script}");
@@ -733,23 +810,45 @@ adder x = x
     assert!(script.contains("techmap"), "{script}");
     assert!(script.contains("clean -purge"), "{script}");
     assert!(script.contains("write_json"), "{script}");
-    assert!(content.contains("#### Netlist"), "{content}");
+    assert!(rendered.contains("#### Netlist"), "{rendered}");
     assert!(
-        content.contains(r#"style="background: white;"#),
-        "{content}"
+        rendered.contains(r#"style="background: white;"#),
+        "{rendered}"
     );
-    assert!(content.contains("<svg"), "{content}");
-    assert!(content.contains("adder netlist"), "{content}");
-    assert!(!content.contains("write_json"), "{content}");
+    assert!(rendered.contains("<svg"), "{rendered}");
+    assert!(rendered.contains("adder netlist"), "{rendered}");
+    assert!(!rendered.contains("write_json"), "{rendered}");
     assert!(
-        !content.contains(&temp.path().display().to_string()),
-        "{content}"
+        !rendered.contains(&temp.path().display().to_string()),
+        "{rendered}"
+    );
+
+    fs::write(
+        &clash_verilog,
+        "module custom_adder(input a, output b); assign b = ~a; endmodule\n",
+    )
+    .expect("change fake Clash output");
+    fs::write(
+        find_file(&temp.path().join("mdbook-clash-work"), "custom_adder.v"),
+        "corrupt",
+    )
+    .expect("invalidate synthesis cache");
+    ClashPreprocessor
+        .run(&ctx, make_book(markdown))
+        .expect("changed synthesis output rebuilds netlist");
+    assert_eq!(
+        fs::read_to_string(netlistsvg_calls)
+            .expect("read netlistsvg calls")
+            .lines()
+            .count(),
+        2
     );
 }
 
 #[test]
 fn missing_netlistsvg_reports_setup_hint() {
     let temp = TempDir::new().expect("tempdir");
+    let yosys_calls = temp.path().join("yosys-calls.txt");
     let fake_clash = temp.path().join("fake-clash");
     let fake_ghc = temp.path().join("fake-ghc");
     let fake_yosys = temp.path().join("fake-yosys");
@@ -773,8 +872,10 @@ done
     write_executable(&fake_ghc, "#!/usr/bin/env sh\nexit 0\n");
     write_executable(
         &fake_yosys,
-        r#"#!/usr/bin/env sh
+        &format!(
+            r#"#!/usr/bin/env sh
 set -eu
+printf 'call\n' >> '{}'
 script=
 while [ "$#" -gt 0 ]; do
   if [ "$1" = "-s" ]; then
@@ -784,37 +885,49 @@ while [ "$#" -gt 0 ]; do
   shift || true
 done
 json=$(sed -n 's/^write_json "\(.*\)"$/\1/p' "$script")
-printf '{"modules":{"topEntity":{}}}\n' > "$json"
+printf '{{"modules":{{"topEntity":{{}}}}}}\n' > "$json"
 "#,
+            yosys_calls.display()
+        ),
     );
 
-    let ctx = make_context_with_yosys_and_netlistsvg(
+    let mut ctx = make_context_with_yosys_and_netlistsvg(
         temp.path(),
         &fake_clash,
         &fake_ghc,
         &fake_yosys,
         &missing_netlistsvg,
     );
-    let book = make_book(
-        r#"
+    ctx.config
+        .set("preprocessor.clash.cache", true)
+        .expect("enable cache");
+    let markdown = r#"
 ```haskell,clash topEntity=wire netlistsvg
 wire :: Bit -> Bit
 wire x = x
 ```
-"#,
-    );
+"#;
 
-    let err = ClashPreprocessor
-        .run(&ctx, book)
-        .expect_err("preprocessor should fail");
-    let err = err.to_string();
-
-    assert!(err.contains("failed to start netlistsvg command"), "{err}");
-    assert!(err.contains("netlistsvg` was requested"), "{err}");
-    assert!(err.contains("netlistsvg-cmd"), "{err}");
-    assert!(
-        err.contains(&missing_netlistsvg.display().to_string()),
-        "{err}"
+    for _ in 0..2 {
+        let err = ClashPreprocessor
+            .run(&ctx, make_book(markdown))
+            .expect_err("preprocessor should fail")
+            .to_string();
+        assert!(err.contains("failed to start netlistsvg command"), "{err}");
+        assert!(err.contains("netlistsvg` was requested"), "{err}");
+        assert!(err.contains("netlistsvg-cmd"), "{err}");
+        assert!(
+            err.contains(&missing_netlistsvg.display().to_string()),
+            "{err}"
+        );
+    }
+    assert_eq!(
+        fs::read_to_string(yosys_calls)
+            .expect("read Yosys calls")
+            .lines()
+            .count(),
+        2,
+        "failed netlist generation must not be cached",
     );
 }
 

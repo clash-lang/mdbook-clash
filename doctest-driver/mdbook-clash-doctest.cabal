@@ -1,0 +1,14 @@
+cabal-version: 2.4
+name: mdbook-clash-doctest
+version: 0.1.0
+build-type: Simple
+license: BSD-2-Clause
+
+executable mdbook-clash-doctest
+  main-is: Main.hs
+  hs-source-dirs: app
+  build-depends:
+      base >=4.12 && <5
+    , doctest >=0.24.3 && <0.25
+  default-language: Haskell2010
+  ghc-options: -Wall

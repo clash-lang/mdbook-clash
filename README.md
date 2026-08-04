@@ -26,7 +26,9 @@ cargo build --release
 ```
 
 Then put `target/release/mdbook-clash` on `PATH`, or reference it directly from
-`book.toml`.
+`book.toml`. Simulation also requires `mdbook-clash-doctest` from the selected
+Clash/GHC package set. The development shell and wrapped flake package provide
+both executables together, which is the recommended installation method.
 
 The flake also exposes a wrapped package containing all runtime dependencies:
 
@@ -35,7 +37,8 @@ nix run . -- supports html
 nix build .
 ```
 
-The development shell contains Rust, mdBook, Clash, Yosys, and netlistsvg.
+The development shell contains Rust, mdBook, Clash, doctest, Yosys, and
+netlistsvg.
 
 ### Selecting a Clash release
 
@@ -85,7 +88,6 @@ keep-artifacts = false
 cache = true
 cache-key = ""
 clash-args = ["-fclash-clear"]
-test-exe-args = []
 yosys-cmd = ["yosys"]
 netlistsvg-cmd = ["netlistsvg"]
 ```
@@ -93,15 +95,18 @@ netlistsvg-cmd = ["netlistsvg"]
 `work-dir` is relative to the book root. Configuration values are type-checked;
 commands must be non-empty TOML arrays.
 
-Both simulation and synthesis use `clash-cmd` and `clash-args`. Clash's normal
-default language extensions therefore apply to the user module in both phases.
+Synthesis invokes `clash-cmd` directly. Simulation asks
+`mdbook-clash-doctest` to use `clash-cmd` as its interactive REPL. Both phases
+receive `clash-args`, so Clash's normal default language extensions apply to
+the user module in both phases. `mdbook-clash-doctest` is a fixed companion
+executable shipped with `mdbook-clash`; it is not separately configurable.
 
 Caching uses independent keys for simulation, synthesis, and netlist rendering.
 Each key covers the generated input, relevant command and arguments, the command
 executable, the running `mdbook-clash` binary, and the cache format version.
-Cached output files are content-hashed and verified before reuse. Incomplete or
-modified entries are rebuilt, and per-entry locks make a shared work directory
-safe for concurrent builds.
+Cached output files are content-hashed and verified before reuse. Incomplete,
+modified, or malformed entries are discarded and rebuilt. Per-entry locks make
+a shared work directory safe for concurrent builds.
 
 Set `cache-key` when behavior can change without changing the configured
 executable, for example when `clash-cmd` invokes `cabal run` and the Cabal
@@ -131,8 +136,15 @@ double x = x + x
 ````
 
 mdbook-clash does not add a module declaration, pragmas, or imports to this
-source. The doctest parser currently supports single-line expressions and
-single-line expected output.
+source. It uses upstream Haskell doctest for parsing, output matching, and
+execution. Supported syntax includes multiline input and output,
+`<BLANKLINE>`, `...` wildcards, sequential interactions, and `prop>`
+properties.
+
+The first `>>>` or `prop>` starts the doctest document for a fenced block. The
+document continues to the end of that fence. Put any following definitions in
+a later block in the same group. This gives doctest an unambiguous document
+boundary without reimplementing its transcript parser in Rust.
 
 ## Grouped code blocks
 
@@ -167,10 +179,11 @@ decrement x = x - offset
 ```
 ````
 
-The blocks are concatenated in chapter order. Simulation compiles one test
-executable for the complete group, then runs it separately for every block that
-contains doctests. This preserves block-specific failure locations without
-recompiling shared definitions. Each block with `topEntity=...` is synthesized
+The blocks are concatenated in chapter order. Simulation loads the complete
+group into one Clash interpreter. Each fenced block containing a doctest is a
+separate doctest example group, so interpreter state is reset between blocks
+and retained between interactions within one block. Diagnostics retain the
+Markdown source path and line. Each block with `topEntity=...` is synthesized
 separately from the complete group, and its Yosys/netlistsvg options apply only
 to that block. A `hidden` block is removed from the rendered Markdown but stays
 in the concatenated source. Using `hidden` without `group=...` is an error.
@@ -179,10 +192,9 @@ Every visible grouped block links to a complete, copyable Haskell listing at the
 end of the chapter. The listing concatenates the group in chapter order,
 includes hidden source, and removes doctest prompts and expected output.
 
-The first top-level import in a group is its import anchor and must already be
-in a valid position. Any top-level import lines in later blocks are removed from
-their original positions and appended to that first import, preserving encounter
-order. This permits a later explanatory block to introduce its own imports.
+Grouped blocks are concatenated without rewriting their Haskell. Put module
+headers, pragmas, and imports in the first block (usually a hidden setup block)
+so the combined source remains a valid module.
 
 ## Synthesis examples
 
@@ -264,8 +276,9 @@ increment x = x + 1
 ```
 ````
 
-For synthesis, the preprocessor strips the doctest prompts and expected-output
-lines before passing the concatenated user module to Clash.
+For both simulation and synthesis, the preprocessor separates the doctest
+document from the definitions before passing the concatenated user module to
+Clash.
 
 ## Running the example book
 
@@ -294,13 +307,25 @@ nix develop -c cargo test
 ```
 
 These tests verify command invocation, hidden blocks, unwrapped user modules,
-synthesis, combined checks, caching, and failure diagnostics. A full
-`mdbook build example` remains the heavier end-to-end check.
+doctest document handling, synthesis, combined checks, caching, and failure
+diagnostics. A full `mdbook build example` remains the heavier end-to-end
+check.
+
+## Source layout
+
+- `lib.rs` implements the mdBook preprocessor boundary.
+- `processor.rs` traverses books and chapters.
+- `markdown.rs` parses and validates fenced blocks.
+- `source.rs` assembles grouped modules and doctest documents.
+- `doctest.rs`, `synthesis.rs`, and `netlist.rs` implement the three build
+  phases directly.
+- `cache.rs` owns cache keys, manifests, and locking.
+- `config.rs` reads `book.toml` configuration.
 
 ## Current limitations
 
-- The doctest syntax is basic. Production-grade multiline examples should use a
-  richer doctest parser.
+- A doctest document must be the final section of its fenced block. Continue
+  definitions in a later block in the same group.
 - Module declarations, language pragmas, and imports are the responsibility of
   the checked source. Simulation recognizes conventional single-line
   `module Name where` declarations; source without one uses Haskell's implicit

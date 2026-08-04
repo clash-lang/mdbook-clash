@@ -25,6 +25,19 @@
         "type": "github"
       }
     },
+    "doctest-src": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1000000000,
+        "narHash": "sha256-pKEuBEZmEyt/wOhXjMY3WvP/i8CyPtH4psD27eSRZ3E=",
+        "type": "tarball",
+        "url": "https://hackage.haskell.org/package/doctest-0.24.3/doctest-0.24.3.tar.gz"
+      },
+      "original": {
+        "type": "tarball",
+        "url": "https://hackage.haskell.org/package/doctest-0.24.3/doctest-0.24.3.tar.gz"
+      }
+    },
     "flake-compat": {
       "flake": false,
       "locked": {
@@ -142,6 +155,7 @@
     "root": {
       "inputs": {
         "clash-compiler": "clash-compiler",
+        "doctest-src": "doctest-src",
         "nixpkgs": [
           "clash-compiler",
           "nixpkgs"

@@ -6,6 +6,14 @@
     # release with `--override-input clash-compiler ...`.
     clash-compiler.url = "github:clash-lang/clash-compiler/v1.10.0";
 
+    # Pin one doctest implementation across all supported Clash/GHC pairs. The
+    # driver uses its internal parser and runner APIs so Markdown transcripts
+    # have the same behavior on every CI lane.
+    doctest-src = {
+      url = "https://hackage.haskell.org/package/doctest-0.24.3/doctest-0.24.3.tar.gz";
+      flake = false;
+    };
+
     # Use the nixpkgs revision against which the selected Clash flake was
     # tested. Overriding clash-compiler therefore also selects a compatible
     # package set used by the selected Clash release.
@@ -15,6 +23,7 @@
   outputs =
     {
       clash-compiler,
+      doctest-src,
       nixpkgs,
       self,
       ...
@@ -35,8 +44,13 @@
           clashGhcVersion = clash-compiler.ghcVersion.${final.stdenv.hostPlatform.system};
           clashPackages = final."clashPackages-${clashGhcVersion}";
           clash = clashPackages.clash-ghc;
+          doctest = final.haskell.lib.dontCheck (clashPackages.callCabal2nix "doctest" doctest-src { });
+          mdbook-clash-doctest = clashPackages.callCabal2nix "mdbook-clash-doctest" ./doctest-driver {
+            inherit doctest;
+          };
           runtimeDependencies = [
             clash
+            mdbook-clash-doctest
             final.netlistsvg
             final.yosys
           ];
@@ -50,12 +64,19 @@
 
             nativeBuildInputs = [ final.makeWrapper ];
             postInstall = ''
+              ln -s ${mdbook-clash-doctest}/bin/mdbook-clash-doctest \
+                $out/bin/mdbook-clash-doctest
               wrapProgram $out/bin/mdbook-clash \
                 --prefix PATH : ${final.lib.makeBinPath runtimeDependencies}
             '';
 
             passthru = {
-              inherit clash runtimeDependencies;
+              inherit
+                clash
+                doctest
+                mdbook-clash-doctest
+                runtimeDependencies
+                ;
             };
 
             meta = {
@@ -66,7 +87,7 @@
           };
         in
         {
-          inherit mdbook-clash;
+          inherit mdbook-clash mdbook-clash-doctest;
         };
 
       overlay = nixpkgs.lib.composeManyExtensions [
@@ -91,7 +112,7 @@
         in
         {
           default = pkgs.mdbook-clash;
-          inherit (pkgs) mdbook-clash;
+          inherit (pkgs) mdbook-clash mdbook-clash-doctest;
         }
       );
 
@@ -111,7 +132,7 @@
         system:
         let
           pkgs = pkgsFor system;
-          inherit (pkgs.mdbook-clash) clash;
+          inherit (pkgs.mdbook-clash) clash mdbook-clash-doctest;
         in
         {
           default = pkgs.mkShell {
@@ -124,6 +145,7 @@
               pkgs.rustfmt
               pkgs.yosys
               clash
+              mdbook-clash-doctest
             ];
 
             shellHook = ''

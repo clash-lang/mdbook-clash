@@ -11,8 +11,17 @@ fn main() -> Result<()> {
         .filter_level(log::LevelFilter::Info)
         .init();
 
+    let preprocessor = ClashPreprocessor;
     match env::args().nth(1).as_deref() {
-        Some("supports") => return Ok(()),
+        Some("supports") => {
+            let renderer = env::args()
+                .nth(2)
+                .context("missing renderer for supports")?;
+            if preprocessor.supports_renderer(&renderer)? {
+                return Ok(());
+            }
+            std::process::exit(1);
+        }
         Some("preprocess") => debug!("mdbook-clash preprocess command called"),
         Some(argument) => bail!("unknown argument `{argument}`"),
         None => {}
@@ -29,7 +38,6 @@ fn main() -> Result<()> {
     let (ctx, book): (PreprocessorContext, Book) =
         serde_json::from_str(&input).context("parsing ctx/book JSON")?;
 
-    let preprocessor = ClashPreprocessor;
     let out = preprocessor.run(&ctx, book).map_err(|err| {
         error!("Preprocessing failed: {err}");
         anyhow::anyhow!("{err}")

@@ -9,25 +9,32 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 const CACHE_SCHEMA: u32 = 1;
+static RUN_ID: AtomicU64 = AtomicU64::new(0);
 
 pub struct ClashPreprocessor;
 
 #[derive(Clone, Debug)]
 struct Config {
     work_dir: PathBuf,
+    run_dir: PathBuf,
     keep_artifacts: bool,
     cache: bool,
     cache_key: String,
     implementation_hash: String,
     clash_cmd: Vec<String>,
+    clash_fingerprint: String,
     clash_args: Vec<String>,
     ghc_cmd: Vec<String>,
+    ghc_fingerprint: String,
     ghc_args: Vec<String>,
     test_exe_args: Vec<String>,
     yosys_cmd: Vec<String>,
+    yosys_fingerprint: String,
     netlistsvg_cmd: Vec<String>,
+    netlistsvg_fingerprint: String,
 }
 
 #[derive(Clone, Debug)]
@@ -57,21 +64,24 @@ impl Preprocessor for ClashPreprocessor {
         "mdbook-clash"
     }
 
-    fn supports_renderer(&self, _renderer: &str) -> Result<bool, anyhow::Error> {
-        Ok(true)
+    fn supports_renderer(&self, renderer: &str) -> Result<bool, anyhow::Error> {
+        Ok(renderer == "html")
     }
 
     fn run(&self, ctx: &PreprocessorContext, mut book: Book) -> Result<Book, Error> {
         let config = Config::from_context(ctx)?;
         let process_context = ProcessContext { ctx, config };
 
-        for item in book.items.iter_mut() {
-            process_item(&process_context, item)?;
-        }
+        let result: Result<(), Error> = (|| {
+            for item in book.items.iter_mut() {
+                process_item(&process_context, item)?;
+            }
+            Ok(())
+        })();
+        let cleanup_result = cleanup_ephemeral_files(&process_context);
 
-        if !process_context.config.keep_artifacts && !process_context.config.cache {
-            cleanup_ephemeral_files(&process_context)?;
-        }
+        result?;
+        cleanup_result?;
 
         Ok(book)
     }
@@ -209,7 +219,7 @@ fn synthesize_module(
             "source": source,
             "top_entity": top_entity,
             "command": process_context.config.clash_cmd,
-            "command_fingerprint": command_fingerprint(&process_context.config.clash_cmd),
+            "command_fingerprint": process_context.config.clash_fingerprint,
             "args": process_context.config.clash_args,
             "hdl": "verilog",
         }),
@@ -263,8 +273,18 @@ fn synthesize_module(
         shell_join_all(&process_context.config.clash_cmd, &args)
     );
 
-    let output = run_configured_command(&process_context.config.clash_cmd, &args)
-        .map_err(|err| command_error("synthesis", chapter_path, block, &module_path, &args, err))?;
+    let output =
+        run_configured_command(&process_context.config.clash_cmd, &args).map_err(|err| {
+            command_error(
+                "synthesis",
+                chapter_path,
+                block,
+                &module_path,
+                &process_context.config.clash_cmd,
+                &args,
+                err,
+            )
+        })?;
 
     if !output.status.success() {
         return Err(command_failure(
@@ -308,9 +328,9 @@ fn netlistsvg_block(
             "top_component": synthesis.top_component,
             "yosys_commands": block.attrs.yosys_commands,
             "yosys_command": process_context.config.yosys_cmd,
-            "yosys_fingerprint": command_fingerprint(&process_context.config.yosys_cmd),
+            "yosys_fingerprint": process_context.config.yosys_fingerprint,
             "netlistsvg_command": process_context.config.netlistsvg_cmd,
-            "netlistsvg_fingerprint": command_fingerprint(&process_context.config.netlistsvg_cmd),
+            "netlistsvg_fingerprint": process_context.config.netlistsvg_fingerprint,
         }),
     )?;
     let artifact_dir = artifact_dir(process_context, "netlistsvg", &cache_key);
@@ -386,6 +406,7 @@ fn netlistsvg_block(
                 chapter_path,
                 block,
                 &script_path,
+                &process_context.config.yosys_cmd,
                 &yosys_args,
                 err,
             )
@@ -426,6 +447,7 @@ fn netlistsvg_block(
                     chapter_path,
                     block,
                     &json_path,
+                    &process_context.config.netlistsvg_cmd,
                     &netlistsvg_args,
                     err,
                 )
@@ -466,7 +488,7 @@ fn test_block(
         serde_json::json!({
             "source": source,
             "compile_command": process_context.config.ghc_cmd,
-            "compiler_fingerprint": command_fingerprint(&process_context.config.ghc_cmd),
+            "compiler_fingerprint": process_context.config.ghc_fingerprint,
             "compile_args": process_context.config.ghc_args,
             "run_args": process_context.config.test_exe_args,
         }),
@@ -517,6 +539,7 @@ fn test_block(
                 chapter_path,
                 block,
                 &main_path,
+                &process_context.config.ghc_cmd,
                 &compile_args,
                 err,
             )
@@ -542,7 +565,15 @@ fn test_block(
 
     let run_output =
         run_configured_command(&[exe_path.display().to_string()], &run_args).map_err(|err| {
-            command_error("simulation", chapter_path, block, &exe_path, &run_args, err)
+            command_error(
+                "simulation",
+                chapter_path,
+                block,
+                &exe_path,
+                &[exe_path.display().to_string()],
+                &run_args,
+                err,
+            )
         })?;
 
     if !run_output.status.success() {
@@ -800,12 +831,15 @@ fn phase_cache_key(
 }
 
 fn artifact_dir(process_context: &ProcessContext, phase: &str, cache_key: &str) -> PathBuf {
-    process_context
-        .config
-        .work_dir
-        .join(format!("cache-v{CACHE_SCHEMA}"))
-        .join(phase)
-        .join(cache_key)
+    let root = if process_context.config.cache {
+        process_context
+            .config
+            .work_dir
+            .join(format!("cache-v{CACHE_SCHEMA}"))
+    } else {
+        process_context.config.run_dir.clone()
+    };
+    root.join(phase).join(cache_key)
 }
 
 fn lock_artifact(artifact_dir: &Path) -> Result<fs::File, Error> {
@@ -986,6 +1020,7 @@ fn command_error(
     chapter_path: &Path,
     block: &ClashBlock,
     generated_path: &Path,
+    cmd: &[String],
     args: &[String],
     err: std::io::Error,
 ) -> Error {
@@ -1008,13 +1043,13 @@ fn command_error(
          block: {}\n\
          line: {}\n\
          generated: {}\n\
-         appended args: {}\n\
+         command: {}\n\
          error: {err}{hint}",
         chapter_path.display(),
         block.block_index,
         block.start_line,
         generated_path.display(),
-        shell_join(args)
+        shell_join_all(cmd, args)
     ))
 }
 
@@ -1167,30 +1202,47 @@ fn sanitize_module_component(input: &str) -> String {
 }
 
 fn cleanup_ephemeral_files(process_context: &ProcessContext) -> Result<(), Error> {
-    let work_dir = &process_context.config.work_dir;
-
-    if !work_dir.exists() {
+    if process_context.config.keep_artifacts || process_context.config.cache {
         return Ok(());
     }
-    fs::remove_dir_all(work_dir)
-        .map_err(|err| Error::msg(format!("cleaning work directory failed: {err}")))?;
+
+    let run_dir = &process_context.config.run_dir;
+    if run_dir.exists() {
+        fs::remove_dir_all(run_dir)
+            .map_err(|err| Error::msg(format!("cleaning run artifact directory failed: {err}")))?;
+    }
 
     Ok(())
 }
 
 impl Config {
     fn from_context(ctx: &PreprocessorContext) -> Result<Self, Error> {
+        let work_dir = work_dir(ctx)?;
+        let clash_cmd = get_command(ctx, "clash-cmd", &["clash"])?;
+        let ghc_cmd = get_command(ctx, "ghc-cmd", &["ghc"])?;
+        let yosys_cmd = get_command(ctx, "yosys-cmd", &["yosys"])?;
+        let netlistsvg_cmd = get_command(ctx, "netlistsvg-cmd", &["netlistsvg"])?;
+
         Ok(Self {
-            work_dir: work_dir(ctx)?,
+            run_dir: work_dir.join("runs").join(format!(
+                "{}-{}",
+                std::process::id(),
+                RUN_ID.fetch_add(1, Ordering::Relaxed)
+            )),
+            work_dir,
             keep_artifacts: get_bool(ctx, "keep-artifacts", false)?,
             cache: get_bool(ctx, "cache", true)?,
             cache_key: get_string(ctx, "cache-key", "")?,
             implementation_hash: implementation_hash()?,
+            clash_fingerprint: command_fingerprint(&clash_cmd),
             clash_cmd: get_command(ctx, "clash-cmd", &["clash"])?,
             clash_args: get_string_vec(ctx, "clash-args", &[])?,
+            ghc_fingerprint: command_fingerprint(&ghc_cmd),
             ghc_cmd: get_command(ctx, "ghc-cmd", &["ghc"])?,
             ghc_args: get_string_vec(ctx, "ghc-args", &["-package", "clash-prelude"])?,
             test_exe_args: get_string_vec(ctx, "test-exe-args", &[])?,
+            yosys_fingerprint: command_fingerprint(&yosys_cmd),
+            netlistsvg_fingerprint: command_fingerprint(&netlistsvg_cmd),
             yosys_cmd: get_command(ctx, "yosys-cmd", &["yosys"])?,
             netlistsvg_cmd: get_command(ctx, "netlistsvg-cmd", &["netlistsvg"])?,
         })
@@ -1384,5 +1436,12 @@ double x = x + x
             script.last().map(String::as_str),
             Some("write_json \"/tmp/netlist.json\"")
         );
+    }
+
+    #[test]
+    fn supports_only_html_renderer() {
+        let preprocessor = ClashPreprocessor;
+        assert!(preprocessor.supports_renderer("html").unwrap());
+        assert!(!preprocessor.supports_renderer("markdown").unwrap());
     }
 }

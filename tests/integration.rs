@@ -5,6 +5,7 @@ use mdbook_preprocessor::{Preprocessor, PreprocessorContext};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use tempfile::TempDir;
 
 fn make_context(root: &Path, clash_command: &Path, ghc_command: &Path) -> PreprocessorContext {
@@ -123,6 +124,75 @@ fn find_file(root: &Path, name: &str) -> PathBuf {
         }
     }
     PathBuf::new()
+}
+
+fn run_artifact_count(root: &Path) -> usize {
+    fs::read_dir(root.join("mdbook-clash-work/runs"))
+        .map(|entries| entries.count())
+        .unwrap_or(0)
+}
+
+#[test]
+fn supports_only_html_renderer() {
+    let binary = env!("CARGO_BIN_EXE_mdbook-clash");
+    assert!(Command::new(binary)
+        .args(["supports", "html"])
+        .status()
+        .expect("run supports html")
+        .success());
+    assert!(!Command::new(binary)
+        .args(["supports", "markdown"])
+        .status()
+        .expect("run supports markdown")
+        .success());
+}
+
+#[test]
+fn non_cached_runs_clean_up_without_deleting_existing_cache() {
+    let temp = TempDir::new().expect("tempdir");
+    let fake_clash = temp.path().join("fake-clash");
+    let fake_ghc = temp.path().join("fake-ghc");
+    let cache_marker = temp
+        .path()
+        .join("mdbook-clash-work/cache-v1/existing-cache");
+    fs::create_dir_all(cache_marker.parent().expect("cache marker parent"))
+        .expect("create existing cache directory");
+    fs::write(&cache_marker, "keep").expect("write existing cache marker");
+    write_executable(
+        &fake_clash,
+        r#"#!/usr/bin/env sh
+set -eu
+out=
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "-outputdir" ]; then
+    shift
+    out="$1"
+  fi
+  shift || true
+done
+mkdir -p "$out"
+printf 'module example(); endmodule\n' > "$out/example.v"
+printf '{"top_component":{"name":"example"}}\n' > "$out/clash-manifest.json"
+"#,
+    );
+    write_executable(&fake_ghc, "#!/usr/bin/env sh\nexit 0\n");
+
+    let mut ctx = make_context_with_cache(temp.path(), &fake_clash, &fake_ghc, false);
+    ctx.config
+        .set("preprocessor.clash.keep-artifacts", false)
+        .expect("disable artifact retention");
+    let book = || make_book("```haskell,clash topEntity=example\nexample = id\n```");
+
+    ClashPreprocessor.run(&ctx, book()).expect("successful run");
+    assert!(cache_marker.exists());
+    assert_eq!(run_artifact_count(temp.path()), 0);
+
+    write_executable(&fake_clash, "#!/usr/bin/env sh\nexit 17\n");
+    ClashPreprocessor
+        .run(&ctx, book())
+        .expect_err("failing run");
+    assert!(cache_marker.exists());
+    assert_eq!(run_artifact_count(temp.path()), 0);
 }
 
 #[test]
@@ -742,6 +812,10 @@ wire x = x
     assert!(err.contains("failed to start netlistsvg command"), "{err}");
     assert!(err.contains("netlistsvg` was requested"), "{err}");
     assert!(err.contains("netlistsvg-cmd"), "{err}");
+    assert!(
+        err.contains(&missing_netlistsvg.display().to_string()),
+        "{err}"
+    );
 }
 
 #[test]

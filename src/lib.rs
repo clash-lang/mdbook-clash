@@ -23,18 +23,13 @@ struct Config {
     keep_artifacts: bool,
     cache: bool,
     cache_key: String,
-    implementation_hash: String,
     clash_cmd: Vec<String>,
-    clash_fingerprint: String,
     clash_args: Vec<String>,
     ghc_cmd: Vec<String>,
-    ghc_fingerprint: String,
     ghc_args: Vec<String>,
     test_exe_args: Vec<String>,
     yosys_cmd: Vec<String>,
-    yosys_fingerprint: String,
     netlistsvg_cmd: Vec<String>,
-    netlistsvg_fingerprint: String,
 }
 
 #[derive(Clone, Debug)]
@@ -202,6 +197,7 @@ struct SynthesisResult {
     verilog_dir: PathBuf,
     top_component: String,
     cache_key: String,
+    output_hash: String,
 }
 
 fn synthesize_module(
@@ -219,7 +215,7 @@ fn synthesize_module(
             "source": source,
             "top_entity": top_entity,
             "command": process_context.config.clash_cmd,
-            "command_fingerprint": process_context.config.clash_fingerprint,
+            "command_fingerprint": command_fingerprint(&process_context.config.clash_cmd),
             "args": process_context.config.clash_args,
             "hdl": "verilog",
         }),
@@ -236,10 +232,12 @@ fn synthesize_module(
             block.block_index
         );
         let top_component = read_top_component(&verilog_dir)?;
+        let output_hash = directory_hash(&verilog_dir)?;
         return Ok(SynthesisResult {
             verilog_dir,
             top_component,
             cache_key,
+            output_hash,
         });
     }
 
@@ -299,6 +297,7 @@ fn synthesize_module(
     }
 
     let top_component = read_top_component(&verilog_dir)?;
+    let output_hash = directory_hash(&verilog_dir)?;
     write_cache_manifest(process_context, &artifact_dir, "synth", &cache_key)?;
 
     eprintln!(
@@ -311,6 +310,7 @@ fn synthesize_module(
         verilog_dir,
         top_component,
         cache_key,
+        output_hash,
     })
 }
 
@@ -325,12 +325,13 @@ fn netlistsvg_block(
         "netlistsvg",
         serde_json::json!({
             "synthesis": synthesis.cache_key,
+            "synthesis_output": synthesis.output_hash,
             "top_component": synthesis.top_component,
             "yosys_commands": block.attrs.yosys_commands,
             "yosys_command": process_context.config.yosys_cmd,
-            "yosys_fingerprint": process_context.config.yosys_fingerprint,
+            "yosys_fingerprint": command_fingerprint(&process_context.config.yosys_cmd),
             "netlistsvg_command": process_context.config.netlistsvg_cmd,
-            "netlistsvg_fingerprint": process_context.config.netlistsvg_fingerprint,
+            "netlistsvg_fingerprint": command_fingerprint(&process_context.config.netlistsvg_cmd),
         }),
     )?;
     let artifact_dir = artifact_dir(process_context, "netlistsvg", &cache_key);
@@ -488,7 +489,7 @@ fn test_block(
         serde_json::json!({
             "source": source,
             "compile_command": process_context.config.ghc_cmd,
-            "compiler_fingerprint": process_context.config.ghc_fingerprint,
+            "compiler_fingerprint": command_fingerprint(&process_context.config.ghc_cmd),
             "compile_args": process_context.config.ghc_args,
             "run_args": process_context.config.test_exe_args,
         }),
@@ -818,10 +819,11 @@ fn phase_cache_key(
     phase: &str,
     inputs: serde_json::Value,
 ) -> Result<String, Error> {
+    let implementation_hash = implementation_hash()?;
     let data = serde_json::to_vec(&serde_json::json!({
         "schema": CACHE_SCHEMA,
         "version": env!("CARGO_PKG_VERSION"),
-        "implementation": process_context.config.implementation_hash,
+        "implementation": implementation_hash,
         "user_key": process_context.config.cache_key,
         "phase": phase,
         "inputs": inputs,
@@ -946,6 +948,13 @@ fn cache_files(root: &Path) -> Result<Vec<CachedFile>, Error> {
         .collect::<Result<Vec<_>, Error>>()?;
     files.sort();
     Ok(files)
+}
+
+fn directory_hash(root: &Path) -> Result<String, Error> {
+    let files = cache_files(root)?;
+    let contents = serde_json::to_vec(&files)
+        .map_err(|err| Error::msg(format!("serializing artifact hashes failed: {err}")))?;
+    Ok(blake3::hash(&contents).to_hex().to_string())
 }
 
 fn read_top_component(verilog_dir: &Path) -> Result<String, Error> {
@@ -1233,18 +1242,13 @@ impl Config {
             keep_artifacts: get_bool(ctx, "keep-artifacts", false)?,
             cache: get_bool(ctx, "cache", true)?,
             cache_key: get_string(ctx, "cache-key", "")?,
-            implementation_hash: implementation_hash()?,
-            clash_fingerprint: command_fingerprint(&clash_cmd),
-            clash_cmd: get_command(ctx, "clash-cmd", &["clash"])?,
+            clash_cmd,
             clash_args: get_string_vec(ctx, "clash-args", &[])?,
-            ghc_fingerprint: command_fingerprint(&ghc_cmd),
-            ghc_cmd: get_command(ctx, "ghc-cmd", &["ghc"])?,
+            ghc_cmd,
             ghc_args: get_string_vec(ctx, "ghc-args", &["-package", "clash-prelude"])?,
             test_exe_args: get_string_vec(ctx, "test-exe-args", &[])?,
-            yosys_fingerprint: command_fingerprint(&yosys_cmd),
-            netlistsvg_fingerprint: command_fingerprint(&netlistsvg_cmd),
-            yosys_cmd: get_command(ctx, "yosys-cmd", &["yosys"])?,
-            netlistsvg_cmd: get_command(ctx, "netlistsvg-cmd", &["netlistsvg"])?,
+            yosys_cmd,
+            netlistsvg_cmd,
         })
     }
 }

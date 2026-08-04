@@ -17,13 +17,13 @@ import Test.DocTest.Internal.Run
 main :: IO ()
 main = do
   arguments <- getArgs
-  (replCommand, clashArguments, moduleName, sourcePath, documents) <-
+  ((replProgram, replArguments), clashArguments, moduleName, sourcePath, documents) <-
     either die pure (parseArguments arguments)
   comments <- mapM readDocument documents
   let config =
         defaultConfig
-          { repl = (head replCommand, tail replCommand ++ ["--interactive"])
-          , ghcOptions = clashArguments ++ [sourcePath]
+          { repl = (replProgram, replArguments ++ ["--interactive"])
+          , ghcOptions = clashArguments ++ ["-O0", sourcePath]
           }
       moduleDocs = Module moduleName Nothing comments
   runDocTests config (parseModules [moduleDocs]) >>= evaluateResult
@@ -39,16 +39,18 @@ readDocument document = do
   contents <- readFile (documentPath document)
   pure (Located (Location (documentSource document) (documentLine document)) contents)
 
-parseArguments :: [String] -> Either String ([String], [String], String, FilePath, [Document])
+parseArguments :: [String] -> Either String ((String, [String]), [String], String, FilePath, [Document])
 parseArguments arguments = do
   (replCommand, afterRepl) <- takeCounted "REPL command" arguments
-  unless (not (null replCommand)) (Left "mdbook-clash-doctest: the REPL command is empty")
+  replInvocation <- case replCommand of
+    program : prefix -> Right (program, prefix)
+    [] -> Left "mdbook-clash-doctest: the REPL command is empty"
   (clashArguments, remaining) <- takeCounted "Clash arguments" afterRepl
   case remaining of
     moduleName : sourcePath : documentArguments -> do
       documents <- parseDocuments documentArguments
       unless (not (null documents)) (Left "mdbook-clash-doctest: no doctest documents were supplied")
-      pure (replCommand, clashArguments, moduleName, sourcePath, documents)
+      pure (replInvocation, clashArguments, moduleName, sourcePath, documents)
     _ -> Left usage
 
 takeCounted :: String -> [String] -> Either String ([String], [String])

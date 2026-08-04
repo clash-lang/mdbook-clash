@@ -22,13 +22,16 @@ From this directory:
 
 ```sh
 nix develop
+build-doctest
 cargo build --release
 ```
 
 Then put `target/release/mdbook-clash` on `PATH`, or reference it directly from
 `book.toml`. Simulation also requires `mdbook-clash-doctest` from the selected
-Clash/GHC package set. The development shell and wrapped flake package provide
-both executables together, which is the recommended installation method.
+Clash/GHC package set. The development shell provides Cabal, the matching GHC,
+and doctest library so the companion can be rebuilt locally into `.dev-bin`;
+that directory is already on `PATH`. The shell deliberately does not build the
+companion on entry. The wrapped flake package includes both executables.
 
 The flake also exposes a wrapped package containing all runtime dependencies:
 
@@ -285,7 +288,9 @@ Clash.
 From `mdbook-clash/`:
 
 ```sh
-nix develop -c mdbook build example
+nix develop
+build-doctest
+mdbook build example
 ```
 
 The example uses the Clash command supplied by the development shell:

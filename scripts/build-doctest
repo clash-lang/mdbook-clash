@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(dirname -- "$script_dir")"
+target="exe:mdbook-clash-doctest"
+
+cabal build "$target" --project-dir="$repo_root/doctest-driver"
+binary="$(cabal list-bin "$target" --project-dir="$repo_root/doctest-driver")"
+
+mkdir -p "$repo_root/.dev-bin"
+ln -sfn "$binary" "$repo_root/.dev-bin/mdbook-clash-doctest"
+echo "Installed $repo_root/.dev-bin/mdbook-clash-doctest"

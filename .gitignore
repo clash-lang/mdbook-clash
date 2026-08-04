@@ -2,3 +2,5 @@
 /example/book/
 /example/mdbook-clash-work/
 /mdbook-clash-work/
+/.dev-bin/
+/doctest-driver/dist-newstyle/

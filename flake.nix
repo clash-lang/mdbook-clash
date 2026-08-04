@@ -45,6 +45,7 @@
           clashPackages = final."clashPackages-${clashGhcVersion}";
           clash = clashPackages.clash-ghc;
           doctest = final.haskell.lib.dontCheck (clashPackages.callCabal2nix "doctest" doctest-src { });
+          ghcWithDoctest = clashPackages.ghcWithPackages (_: [ doctest ]);
           mdbook-clash-doctest = clashPackages.callCabal2nix "mdbook-clash-doctest" ./doctest-driver {
             inherit doctest;
           };
@@ -74,6 +75,7 @@
               inherit
                 clash
                 doctest
+                ghcWithDoctest
                 mdbook-clash-doctest
                 runtimeDependencies
                 ;
@@ -132,12 +134,13 @@
         system:
         let
           pkgs = pkgsFor system;
-          inherit (pkgs.mdbook-clash) clash mdbook-clash-doctest;
+          inherit (pkgs.mdbook-clash) clash ghcWithDoctest;
         in
         {
           default = pkgs.mkShell {
             packages = [
               pkgs.cargo
+              pkgs.cabal-install
               pkgs.clippy
               pkgs.mdbook
               pkgs.netlistsvg
@@ -145,12 +148,14 @@
               pkgs.rustfmt
               pkgs.yosys
               clash
-              mdbook-clash-doctest
+              ghcWithDoctest
             ];
 
             shellHook = ''
+              export PATH="${ghcWithDoctest}/bin:$PWD/scripts:$PWD/.dev-bin:$PATH"
               echo "mdbook-clash development shell (Clash toolchain)"
               echo "Build: cargo build"
+              echo "Build doctest driver: build-doctest"
               echo "Example: mdbook build example"
             '';
           };

@@ -6,6 +6,7 @@ use mdbook_preprocessor::errors::Error;
 use mdbook_preprocessor::{Preprocessor, PreprocessorContext};
 use pulldown_cmark::{CodeBlockKind, Event, Parser, Tag, TagEnd};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -43,6 +44,7 @@ struct ClashBlock {
 
 #[derive(Clone, Debug, Default)]
 struct BlockAttrs {
+    group: Option<String>,
     top_entity: Option<String>,
     yosys_commands: Vec<String>,
     netlistsvg: bool,
@@ -98,18 +100,43 @@ fn process_chapter(process_context: &ProcessContext, chapter: &mut Chapter) -> R
 
     let blocks = find_clash_blocks(&chapter.content)
         .map_err(|err| Error::msg(format!("{err}\nchapter: {}", chapter_path.display())))?;
-    let mut insertions = Vec::new();
-    for block in blocks {
-        debug!(
-            "Processing block {} in {:?}",
-            block.block_index, chapter_path
-        );
-        let addition = process_block(process_context, &chapter_path, &block)?;
-        if !addition.is_empty() {
-            insertions.push((block.insert_offset, addition));
+    for block in &blocks {
+        validate_block(&chapter_path, block)?;
+    }
+
+    let mut units: Vec<Vec<&ClashBlock>> = Vec::new();
+    let mut grouped_units = HashMap::new();
+    for block in &blocks {
+        if let Some(group) = block.attrs.group.as_deref() {
+            let unit_index = *grouped_units.entry(group).or_insert_with(|| {
+                units.push(Vec::new());
+                units.len() - 1
+            });
+            units[unit_index].push(block);
+        } else {
+            units.push(vec![block]);
         }
     }
 
+    let mut insertions = Vec::new();
+    for unit in units {
+        if unit.iter().any(|block| has_doctests(&block.code)) {
+            test_blocks(process_context, &chapter_path, &unit)?;
+        }
+        let definitions = combined_definitions(&unit);
+        for block in unit {
+            debug!(
+                "Processing block {} in {:?}",
+                block.block_index, chapter_path
+            );
+            let addition = process_block(process_context, &chapter_path, block, &definitions)?;
+            if !addition.is_empty() {
+                insertions.push((block.insert_offset, addition));
+            }
+        }
+    }
+
+    insertions.sort_by_key(|(offset, _)| *offset);
     for (offset, addition) in insertions.into_iter().rev() {
         chapter.content.insert_str(offset, &addition);
     }
@@ -125,17 +152,18 @@ fn process_block(
     process_context: &ProcessContext,
     chapter_path: &Path,
     block: &ClashBlock,
+    definitions: &str,
 ) -> Result<String, Error> {
-    validate_block(chapter_path, block)?;
-
-    if has_doctests(&block.code) {
-        test_block(process_context, chapter_path, block)?;
-    }
-
     let Some(top_entity) = block.attrs.top_entity.as_deref() else {
         return Ok(String::new());
     };
-    let synthesis = synthesize_snippet_block(process_context, chapter_path, block, top_entity)?;
+    let synthesis = synthesize_snippet_block(
+        process_context,
+        chapter_path,
+        block,
+        top_entity,
+        definitions,
+    )?;
     if block.attrs.netlistsvg {
         netlistsvg_block(process_context, chapter_path, block, &synthesis)
     } else {
@@ -177,10 +205,10 @@ fn synthesize_snippet_block(
     chapter_path: &Path,
     block: &ClashBlock,
     top_entity: &str,
+    definitions: &str,
 ) -> Result<SynthesisResult, Error> {
     let module_name = generated_module_name(process_context, chapter_path, block);
-    let definitions = strip_doctests(&block.code);
-    let source = render_snippet_synth_module(&module_name, &definitions);
+    let source = render_snippet_synth_module(&module_name, definitions);
 
     synthesize_module(
         process_context,
@@ -477,12 +505,29 @@ fn netlistsvg_block(
     )))
 }
 
-fn test_block(
+fn combined_definitions(blocks: &[&ClashBlock]) -> String {
+    let mut definitions = String::new();
+    for block in blocks {
+        definitions.push_str(&strip_doctests(&block.code));
+        if !definitions.ends_with('\n') {
+            definitions.push('\n');
+        }
+    }
+    definitions
+}
+
+fn test_blocks(
     process_context: &ProcessContext,
     chapter_path: &Path,
-    block: &ClashBlock,
+    blocks: &[&ClashBlock],
 ) -> Result<(), Error> {
-    let source = render_test_module(&block.code);
+    let first_block = blocks.first().expect("test unit is not empty");
+    let test_blocks = blocks
+        .iter()
+        .copied()
+        .filter(|block| has_doctests(&block.code))
+        .collect::<Vec<_>>();
+    let source = render_test_module_for_blocks(blocks);
     let cache_key = phase_cache_key(
         process_context,
         "test",
@@ -501,9 +546,9 @@ fn test_block(
 
     if cache_hit(process_context, &artifact_dir, "test", &cache_key) {
         eprintln!(
-            " INFO mdbook-clash: simulation cache hit for {} block {}",
+            " INFO mdbook-clash: simulation cache hit for {} block(s) {}",
             chapter_path.display(),
-            block.block_index
+            block_indices(&test_blocks)
         );
         return Ok(());
     }
@@ -523,10 +568,9 @@ fn test_block(
     compile_args.push(exe_path.display().to_string());
 
     eprintln!(
-        " INFO mdbook-clash: simulating {} block {} line {}",
+        " INFO mdbook-clash: compiling simulation for {} block(s) {}",
         chapter_path.display(),
-        block.block_index,
-        block.start_line
+        block_indices(blocks)
     );
     eprintln!(
         " INFO mdbook-clash: compiling {}",
@@ -538,7 +582,7 @@ fn test_block(
             command_error(
                 "simulation compile",
                 chapter_path,
-                block,
+                first_block,
                 &main_path,
                 &process_context.config.ghc_cmd,
                 &compile_args,
@@ -550,7 +594,7 @@ fn test_block(
         return Err(command_failure(
             "simulation compile",
             chapter_path,
-            block,
+            first_block,
             &main_path,
             &process_context.config.ghc_cmd,
             &compile_args,
@@ -558,14 +602,26 @@ fn test_block(
         ));
     }
 
-    let run_args = process_context.config.test_exe_args.clone();
-    eprintln!(
-        " INFO mdbook-clash: running {}",
-        shell_join_all(&[exe_path.display().to_string()], &run_args)
-    );
+    for block in test_blocks {
+        let run_args = process_context.config.test_exe_args.clone();
+        eprintln!(
+            " INFO mdbook-clash: simulating {} block {} line {}",
+            chapter_path.display(),
+            block.block_index,
+            block.start_line
+        );
+        eprintln!(
+            " INFO mdbook-clash: running {}",
+            shell_join_all(&[exe_path.display().to_string()], &run_args)
+        );
 
-    let run_output =
-        run_configured_command(&[exe_path.display().to_string()], &run_args).map_err(|err| {
+        let run_output = run_configured_command_with_env(
+            &[exe_path.display().to_string()],
+            &run_args,
+            "MDBOOK_CLASH_BLOCK",
+            &block.block_index.to_string(),
+        )
+        .map_err(|err| {
             command_error(
                 "simulation",
                 chapter_path,
@@ -577,27 +633,36 @@ fn test_block(
             )
         })?;
 
-    if !run_output.status.success() {
-        return Err(command_failure(
-            "simulation",
-            chapter_path,
-            block,
-            &exe_path,
-            &[exe_path.display().to_string()],
-            &run_args,
-            &run_output,
-        ));
+        if !run_output.status.success() {
+            return Err(command_failure(
+                "simulation",
+                chapter_path,
+                block,
+                &exe_path,
+                &[exe_path.display().to_string()],
+                &run_args,
+                &run_output,
+            ));
+        }
     }
 
     write_cache_manifest(process_context, &artifact_dir, "test", &cache_key)?;
 
     eprintln!(
-        " INFO mdbook-clash: simulated {} block {}",
+        " INFO mdbook-clash: simulated {} block(s) {}",
         chapter_path.display(),
-        block.block_index
+        block_indices(blocks)
     );
 
     Ok(())
+}
+
+fn block_indices(blocks: &[&ClashBlock]) -> String {
+    blocks
+        .iter()
+        .map(|block| block.block_index.to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn find_clash_blocks(content: &str) -> Result<Vec<ClashBlock>, Error> {
@@ -726,6 +791,16 @@ fn parse_block_info(info: &str) -> Result<Option<BlockAttrs>, String> {
     {
         if attr == "netlistsvg" {
             attrs.netlistsvg = true;
+        } else if let Some(value) = attr
+            .strip_prefix("group=")
+            .or_else(|| attr.strip_prefix("id="))
+        {
+            if value.is_empty() {
+                return Err("group requires an identifier".to_string());
+            }
+            if attrs.group.replace(value.to_string()).is_some() {
+                return Err("group was specified more than once".to_string());
+            }
         } else if let Some(value) = attr.strip_prefix("topEntity=") {
             if value.is_empty() {
                 return Err("topEntity requires a binding name".to_string());
@@ -1024,6 +1099,26 @@ fn run_configured_command(cmd: &[String], args: &[String]) -> std::io::Result<Ou
     command.output()
 }
 
+fn run_configured_command_with_env(
+    cmd: &[String],
+    args: &[String],
+    key: &str,
+    value: &str,
+) -> std::io::Result<Output> {
+    let Some((program, prefix_args)) = cmd.split_first() else {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "empty command vector",
+        ));
+    };
+
+    let mut command = Command::new(program);
+    command.args(prefix_args);
+    command.args(args);
+    command.env(key, value);
+    command.output()
+}
+
 fn command_error(
     mode: &str,
     chapter_path: &Path,
@@ -1092,8 +1187,19 @@ fn command_failure(
     ))
 }
 
+#[cfg(test)]
 fn render_test_module(code: &str) -> String {
-    let parsed = parse_doctest_lines(code);
+    let block = ClashBlock {
+        attrs: BlockAttrs::default(),
+        code: code.to_string(),
+        block_index: 1,
+        start_line: 1,
+        insert_offset: 0,
+    };
+    render_test_module_for_blocks(&[&block])
+}
+
+fn render_test_module_for_blocks(blocks: &[&ClashBlock]) -> String {
     let mut module = String::new();
     module.push_str("{-# LANGUAGE DataKinds #-}\n");
     module.push_str("{-# LANGUAGE FlexibleContexts #-}\n");
@@ -1104,6 +1210,7 @@ fn render_test_module(code: &str) -> String {
     module.push_str("module Main where\n\n");
     module.push_str("import Clash.Prelude\n");
     module.push_str("import qualified Prelude as P\n");
+    module.push_str("import System.Environment (lookupEnv)\n");
     module.push_str("import System.Exit (exitFailure)\n\n");
     module.push_str("__mdbookClashAssertEqual :: (Eq a, Show a) => P.String -> a -> a -> IO ()\n");
     module.push_str("__mdbookClashAssertEqual name expected actual =\n");
@@ -1114,19 +1221,28 @@ fn render_test_module(code: &str) -> String {
     module.push_str("      P.putStrLn (\"expected: \" P.++ P.show expected)\n");
     module.push_str("      P.putStrLn (\"actual:   \" P.++ P.show actual)\n");
     module.push_str("      exitFailure\n\n");
-    module.push_str(&parsed.definitions);
+    for block in blocks {
+        module.push_str(&parse_doctest_lines(&block.code).definitions);
+    }
     module.push_str("\nmain :: IO ()\n");
     module.push_str("main = do\n");
-
-    if parsed.assertions.is_empty() {
-        module.push_str("  P.pure ()\n");
-    } else {
-        for line in parsed.assertions {
-            module.push_str("  ");
-            module.push_str(&line);
+    module.push_str("  selector <- lookupEnv \"MDBOOK_CLASH_BLOCK\"\n");
+    module.push_str("  case selector of\n");
+    for block in blocks {
+        let parsed = parse_doctest_lines(&block.code);
+        if parsed.assertions.is_empty() {
+            continue;
+        }
+        module.push_str(&format!("    P.Just \"{}\" -> do\n", block.block_index));
+        for line in &parsed.assertions {
+            module.push_str("      ");
+            module.push_str(line);
             module.push('\n');
         }
     }
+    module.push_str("    _ -> do\n");
+    module.push_str("      P.putStrLn \"mdbook-clash: missing or invalid block selector\"\n");
+    module.push_str("      exitFailure\n");
 
     module
 }

@@ -2,6 +2,7 @@
 
 `mdbook-clash` is an mdBook preprocessor for documentation examples written in
 Clash/Haskell. It checks selected fenced code blocks during `mdbook build`.
+It currently supports mdBook's HTML renderer.
 
 The current implementation uses one fenced-code attribute:
 

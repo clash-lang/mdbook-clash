@@ -8,7 +8,7 @@
 
     # Use the nixpkgs revision against which the selected Clash flake was
     # tested. Overriding clash-compiler therefore also selects a compatible
-    # package set for GHC and clash-prelude.
+    # package set used by the selected Clash release.
     nixpkgs.follows = "clash-compiler/nixpkgs";
   };
 
@@ -35,12 +35,8 @@
           clashGhcVersion = clash-compiler.ghcVersion.${final.stdenv.hostPlatform.system};
           clashPackages = final."clashPackages-${clashGhcVersion}";
           clash = clashPackages.clash-ghc;
-          ghc = clashPackages.ghcWithPackages (packages: [
-            packages.clash-prelude
-          ]);
           runtimeDependencies = [
             clash
-            ghc
             final.netlistsvg
             final.yosys
           ];
@@ -59,7 +55,7 @@
             '';
 
             passthru = {
-              inherit clash ghc runtimeDependencies;
+              inherit clash runtimeDependencies;
             };
 
             meta = {
@@ -115,7 +111,7 @@
         system:
         let
           pkgs = pkgsFor system;
-          inherit (pkgs.mdbook-clash) clash ghc;
+          inherit (pkgs.mdbook-clash) clash;
         in
         {
           default = pkgs.mkShell {
@@ -127,12 +123,11 @@
               pkgs.rustc
               pkgs.rustfmt
               pkgs.yosys
-              ghc
               clash
             ];
 
             shellHook = ''
-              echo "mdbook-clash development shell (Clash GHC ${clash-compiler.ghcVersion.${system}})"
+              echo "mdbook-clash development shell (Clash toolchain)"
               echo "Build: cargo build"
               echo "Example: mdbook build example"
             '';

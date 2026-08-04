@@ -13,6 +13,7 @@ Within a `clash` block:
 - `>>>` doctest examples trigger simulation.
 - `topEntity=...` triggers synthesis to Verilog.
 - `group=...` combines definitions from multiple blocks.
+- `hidden` includes a grouped block in checks but removes it from the book.
 - If both are present, both checks run.
 
 ## Installation
@@ -34,8 +35,7 @@ nix run . -- supports html
 nix build .
 ```
 
-The development shell contains Rust, mdBook, Clash, a matching GHC with
-`clash-prelude`, Yosys, and netlistsvg.
+The development shell contains Rust, mdBook, Clash, Yosys, and netlistsvg.
 
 ### Selecting a Clash release
 
@@ -47,9 +47,9 @@ nix flake lock \
   --override-input clash-compiler github:clash-lang/clash-compiler/v1.8.5
 ```
 
-The `nixpkgs` input follows `clash-compiler/nixpkgs`, and the development shell
-selects the GHC version exported by the chosen Clash flake. Downstream flakes
-can make the same choice declaratively and have this flake follow it:
+The `nixpkgs` input follows `clash-compiler/nixpkgs`, keeping the development
+shell aligned with the selected Clash release. Downstream flakes can make the
+same choice declaratively and have this flake follow it:
 
 ```nix
 inputs.clash-compiler.url = "github:clash-lang/clash-compiler/v1.8.5";
@@ -68,19 +68,12 @@ With the flake development shell or wrapped package, use:
 [preprocessor.clash]
 command = "mdbook-clash"
 clash-cmd = ["clash"]
-ghc-cmd = ["ghc"]
 ```
 
 If `clash-cmd` is omitted, it defaults to:
 
 ```toml
 clash-cmd = ["clash"]
-```
-
-If `ghc-cmd` is omitted, it defaults to:
-
-```toml
-ghc-cmd = ["ghc"]
 ```
 
 Other options:
@@ -92,7 +85,6 @@ keep-artifacts = false
 cache = true
 cache-key = ""
 clash-args = ["-fclash-clear"]
-ghc-args = ["-package", "clash-prelude"]
 test-exe-args = []
 yosys-cmd = ["yosys"]
 netlistsvg-cmd = ["netlistsvg"]
@@ -100,6 +92,9 @@ netlistsvg-cmd = ["netlistsvg"]
 
 `work-dir` is relative to the book root. Configuration values are type-checked;
 commands must be non-empty TOML arrays.
+
+Both simulation and synthesis use `clash-cmd` and `clash-args`. Clash's normal
+default language extensions therefore apply to the user module in both phases.
 
 Caching uses independent keys for simulation, synthesis, and netlist rendering.
 Each key covers the generated input, relevant command and arguments, the command
@@ -115,10 +110,18 @@ project changes. CI can set it to its toolchain or lock-file revision. Set
 
 ## Simulation examples
 
-Use a normal Haskell code fence with the `clash` attribute and `>>>` examples:
+The checked source owns its module declaration, language pragmas, and imports.
+A hidden grouped block is a convenient place for boilerplate that should not be
+shown in the rendered book:
 
 ````md
-```haskell,clash
+```haskell,clash group=double hidden
+module DoubleExample where
+
+import Clash.Prelude
+```
+
+```haskell,clash group=double
 double :: Unsigned 8 -> Unsigned 8
 double x = x + x
 
@@ -127,16 +130,23 @@ double x = x + x
 ```
 ````
 
-`Clash.Prelude` is implicitly in scope. The doctest parser currently supports
-single-line expressions and single-line expected output.
+mdbook-clash does not add a module declaration, pragmas, or imports to this
+source. The doctest parser currently supports single-line expressions and
+single-line expected output.
 
 ## Grouped code blocks
 
 Give several blocks the same `group` identifier when an example is easier to
 explain in stages but should be checked as one program. Groups are local to a
-chapter. `id=...` is accepted as an alias for `group=...`.
+chapter.
 
 ````md
+```haskell,clash group=counter hidden
+module CounterExample where
+
+import Clash.Prelude
+```
+
 ```haskell,clash group=counter
 offset :: Unsigned 8
 offset = 1
@@ -162,30 +172,26 @@ executable for the complete group, then runs it separately for every block that
 contains doctests. This preserves block-specific failure locations without
 recompiling shared definitions. Each block with `topEntity=...` is synthesized
 separately from the complete group, and its Yosys/netlistsvg options apply only
-to that block.
+to that block. A `hidden` block is removed from the rendered Markdown but stays
+in the concatenated source. Using `hidden` without `group=...` is an error.
 
 ## Synthesis examples
 
-Add `topEntity=...` to synthesize a snippet:
+Add `topEntity=...` to synthesize a binding. The module and imports still come
+from the checked source:
 
 ````md
-```haskell,clash topEntity=adder
+```haskell,clash group=adder hidden
+module AdderExample where
+
+import Clash.Prelude
+```
+
+```haskell,clash group=adder topEntity=adder
 adder :: Unsigned 8 -> Unsigned 8 -> Unsigned 8
 adder a b = a + b
 ```
 ````
-
-The preprocessor generates a module using the book title, page, and source line,
-for example:
-
-```haskell
-module MyBook.Introduction.Line17 where
-
-import Clash.Prelude
-
-adder :: Unsigned 8 -> Unsigned 8 -> Unsigned 8
-adder a b = a + b
-```
 
 Then it runs:
 
@@ -194,7 +200,9 @@ clash <generated-module> --verilog -main-is adder -outputdir <artifact-dir>/veri
 ```
 
 `-main-is` tells Clash to synthesize the binding named by `topEntity=...`
-directly. The build fails if Clash exits unsuccessfully.
+directly. The source passed to Clash is the concatenated user source with
+doctests removed; mdbook-clash does not wrap or otherwise modify it. The build
+fails if Clash exits unsuccessfully.
 
 ## Netlist SVGs
 
@@ -202,7 +210,7 @@ The development shell also includes `netlistsvg`. Add `netlistsvg` to a
 synthesized block to inject a rendered netlist SVG:
 
 ````md
-```haskell,clash topEntity=adder netlistsvg
+```haskell,clash group=adder topEntity=adder netlistsvg
 adder :: Unsigned 8 -> Unsigned 8 -> Unsigned 8
 adder a b = a + b
 ```
@@ -216,7 +224,7 @@ default flow then runs `proc`, `opt`, `clean -purge`, and writes JSON.
 Add `yosys="..."` to customize the Yosys flow used for the netlist diagram:
 
 ````md
-```haskell,clash topEntity=adder yosys="proc; opt; techmap" netlistsvg
+```haskell,clash group=adder topEntity=adder yosys="proc; opt; techmap" netlistsvg
 adder :: Unsigned 8 -> Unsigned 8 -> Unsigned 8
 adder a b = a + b
 ```
@@ -232,7 +240,13 @@ only the SVG is included in the final documentation.
 ## Combined simulation and synthesis
 
 ````md
-```haskell,clash topEntity=increment
+```haskell,clash group=increment hidden
+module IncrementExample where
+
+import Clash.Prelude
+```
+
+```haskell,clash group=increment topEntity=increment
 increment :: Unsigned 8 -> Unsigned 8
 increment x = x + 1
 
@@ -242,7 +256,7 @@ increment x = x + 1
 ````
 
 For synthesis, the preprocessor strips the doctest prompts and expected-output
-lines before generating the Clash module.
+lines before passing the concatenated user module to Clash.
 
 ## Running the example book
 
@@ -252,11 +266,10 @@ From `mdbook-clash/`:
 nix develop -c mdbook build example
 ```
 
-The example uses the Clash and GHC commands supplied by the development shell:
+The example uses the Clash command supplied by the development shell:
 
 ```toml
 clash-cmd = ["clash"]
-ghc-cmd = ["ghc"]
 ```
 
 The example also uses `netlistsvg`; both it and Yosys are included in the
@@ -271,16 +284,17 @@ executables and exercise the real mdBook preprocessor entry point:
 nix develop -c cargo test
 ```
 
-These tests verify command invocation, generated wrapper modules, synthesis,
-combined checks, caching, and failure diagnostics. A full `mdbook build example`
-remains the heavier end-to-end check.
+These tests verify command invocation, hidden blocks, unwrapped user modules,
+synthesis, combined checks, caching, and failure diagnostics. A full
+`mdbook build example` remains the heavier end-to-end check.
 
 ## Current limitations
 
 - The doctest syntax is basic. Production-grade multiline examples should use a
   richer doctest parser.
-- Generated synthesis modules are named from book title, page name, and source
-  line; unusual titles/page paths are sanitized to valid Haskell module
-  components.
+- Module declarations, language pragmas, and imports are the responsibility of
+  the checked source. Simulation recognizes conventional single-line
+  `module Name where` declarations; source without one uses Haskell's implicit
+  `Main` module.
 - The preprocessor executes local commands while building docs. Treat examples
   as trusted source code.

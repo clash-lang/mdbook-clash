@@ -179,6 +179,11 @@ Every visible grouped block links to a complete, copyable Haskell listing at the
 end of the chapter. The listing concatenates the group in chapter order,
 includes hidden source, and removes doctest prompts and expected output.
 
+The first top-level import in a group is its import anchor and must already be
+in a valid position. Any top-level import lines in later blocks are removed from
+their original positions and appended to that first import, preserving encounter
+order. This permits a later explanatory block to introduce its own imports.
+
 ## Synthesis examples
 
 Add `topEntity=...` to synthesize a binding. The module and imports still come

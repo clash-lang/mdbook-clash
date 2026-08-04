@@ -1122,6 +1122,8 @@ offset = 1
 ```
 
 ```haskell,clash group=counter topEntity=increment
+import qualified Data.List as List
+
 increment x = x + offset
 
 >>> increment 4
@@ -1192,7 +1194,11 @@ decrement x = x - offset
     assert!(listing.contains("### Group <code>counter</code>"));
     assert!(listing.contains("module Counter where"));
     assert!(listing.contains("import Clash.Prelude"));
-    assert!(listing.contains("import Clash.Prelude\n\noffset :: Unsigned 8"));
+    assert!(
+        listing.contains(
+            "module Counter where\nimport Clash.Prelude\nimport qualified Data.List as List\n\noffset :: Unsigned 8"
+        )
+    );
     assert!(listing.contains("offset = 1"));
     assert!(listing.contains("increment x = x + offset"));
     assert!(listing.contains("decrement x = x - offset"));
@@ -1205,7 +1211,9 @@ decrement x = x - offset
         assert!(source.contains("module Counter where"), "{source}");
         assert!(source.contains("import Clash.Prelude"), "{source}");
         assert!(
-            source.contains("import Clash.Prelude\n\noffset :: Unsigned 8"),
+            source.contains(
+                "import Clash.Prelude\nimport qualified Data.List as List\n\noffset :: Unsigned 8"
+            ),
             "{source}"
         );
         assert!(source.contains("offset = 1"), "{source}");

@@ -1,5 +1,5 @@
 use anyhow::{bail, Context, Result};
-use log::{debug, error};
+use log::debug;
 use mdbook_clash::ClashPreprocessor;
 use mdbook_preprocessor::book::Book;
 use mdbook_preprocessor::{Preprocessor, PreprocessorContext};
@@ -38,10 +38,7 @@ fn main() -> Result<()> {
     let (ctx, book): (PreprocessorContext, Book) =
         serde_json::from_str(&input).context("parsing ctx/book JSON")?;
 
-    let out = preprocessor.run(&ctx, book).map_err(|err| {
-        error!("Preprocessing failed: {err}");
-        anyhow::anyhow!("{err}")
-    })?;
+    let out = preprocessor.run(&ctx, book)?;
 
     println!("{}", serde_json::to_string(&out)?);
     Ok(())

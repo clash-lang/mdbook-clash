@@ -2,7 +2,13 @@
 
 This block is simulated during `mdbook build`:
 
-```haskell,clash
+```haskell,clash group=double-example hidden
+module DoubleExample where
+
+import Clash.Prelude
+```
+
+```haskell,clash group=double-example
 double :: Unsigned 8 -> Unsigned 8
 double x = x + x
 
@@ -13,15 +19,28 @@ double x = x + x
 This block is synthesized to Verilog during `mdbook build` because it has a
 `topEntity` attribute:
 
-```haskell,clash topEntity=adder yosys="proc;" netlistsvg
+```haskell,clash group=adder-example hidden
+module AdderExample where
+
+import Clash.Prelude
+```
+
+```haskell,clash group=adder-example topEntity=adder yosys="proc;" netlistsvg
 adder :: Unsigned 8 -> Unsigned 8 -> Unsigned 8
 adder a b = a + b
 ```
 
-```haskell,clash topEntity=increment
+```haskell,clash group=increment-example hidden
+module IncrementExample where
+
+import Clash.Prelude
+```
+
+```haskell,clash group=increment-example topEntity=increment
 increment :: Unsigned 8 -> Unsigned 8
 increment x = x + 1
 
+x :: Unsigned 8
 x = 10 + 11
 
 >>> increment x
@@ -33,6 +52,12 @@ x = 10 + 11
 Blocks with the same `group` identifier are combined into one set of
 definitions. This first block provides a definition shared by both synthesis
 targets below:
+
+```haskell,clash group=adjusters hidden
+module Adjusters where
+
+import Clash.Prelude
+```
 
 ```haskell,clash group=adjusters
 adjustment :: Unsigned 8

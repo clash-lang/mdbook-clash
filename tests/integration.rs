@@ -1,5 +1,5 @@
 use mdbook_clash::ClashPreprocessor;
-use mdbook_preprocessor::book::{Book, Chapter};
+use mdbook_preprocessor::book::{Book, BookItem, Chapter};
 use mdbook_preprocessor::config::Config;
 use mdbook_preprocessor::{Preprocessor, PreprocessorContext};
 use std::fs;
@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use tempfile::TempDir;
 
-fn make_context(root: &Path, clash_command: &Path, ghc_command: &Path) -> PreprocessorContext {
+fn make_context(root: &Path, clash_command: &Path) -> PreprocessorContext {
     let mut config = Config::default();
     config
         .set("book.title", "Test Book")
@@ -22,26 +22,15 @@ fn make_context(root: &Path, clash_command: &Path, ghc_command: &Path) -> Prepro
             vec![clash_command.display().to_string()],
         )
         .expect("set clash-cmd");
-    config
-        .set(
-            "preprocessor.clash.ghc-cmd",
-            vec![ghc_command.display().to_string()],
-        )
-        .expect("set ghc-cmd");
-    config
-        .set("preprocessor.clash.ghc-args", Vec::<String>::new())
-        .expect("set ghc-args");
-
     PreprocessorContext::new(root.to_path_buf(), config, "html".to_string())
 }
 
 fn make_context_with_yosys(
     root: &Path,
     clash_command: &Path,
-    ghc_command: &Path,
     yosys_command: &Path,
 ) -> PreprocessorContext {
-    let mut ctx = make_context(root, clash_command, ghc_command);
+    let mut ctx = make_context(root, clash_command);
     ctx.config
         .set(
             "preprocessor.clash.yosys-cmd",
@@ -57,11 +46,10 @@ fn make_context_with_yosys(
 fn make_context_with_yosys_and_netlistsvg(
     root: &Path,
     clash_command: &Path,
-    ghc_command: &Path,
     yosys_command: &Path,
     netlistsvg_command: &Path,
 ) -> PreprocessorContext {
-    let mut ctx = make_context_with_yosys(root, clash_command, ghc_command, yosys_command);
+    let mut ctx = make_context_with_yosys(root, clash_command, yosys_command);
     ctx.config
         .set(
             "preprocessor.clash.netlistsvg-cmd",
@@ -71,13 +59,8 @@ fn make_context_with_yosys_and_netlistsvg(
     ctx
 }
 
-fn make_context_with_cache(
-    root: &Path,
-    clash_command: &Path,
-    ghc_command: &Path,
-    cache: bool,
-) -> PreprocessorContext {
-    let mut ctx = make_context(root, clash_command, ghc_command);
+fn make_context_with_cache(root: &Path, clash_command: &Path, cache: bool) -> PreprocessorContext {
+    let mut ctx = make_context(root, clash_command);
     ctx.config
         .set("preprocessor.clash.cache", cache)
         .expect("set cache");
@@ -151,7 +134,6 @@ fn supports_only_html_renderer() {
 fn non_cached_runs_clean_up_without_deleting_existing_cache() {
     let temp = TempDir::new().expect("tempdir");
     let fake_clash = temp.path().join("fake-clash");
-    let fake_ghc = temp.path().join("fake-ghc");
     let cache_marker = temp
         .path()
         .join("mdbook-clash-work/cache-v1/existing-cache");
@@ -175,9 +157,8 @@ printf 'module example(); endmodule\n' > "$out/example.v"
 printf '{"top_component":{"name":"example"}}\n' > "$out/clash-manifest.json"
 "#,
     );
-    write_executable(&fake_ghc, "#!/usr/bin/env sh\nexit 0\n");
 
-    let mut ctx = make_context_with_cache(temp.path(), &fake_clash, &fake_ghc, false);
+    let mut ctx = make_context_with_cache(temp.path(), &fake_clash, false);
     ctx.config
         .set("preprocessor.clash.keep-artifacts", false)
         .expect("disable artifact retention");
@@ -200,7 +181,6 @@ fn synth_blocks_invoke_configured_clash_command() {
     let temp = TempDir::new().expect("tempdir");
     let calls = temp.path().join("calls.txt");
     let fake_clash = temp.path().join("fake-clash");
-    let fake_ghc = temp.path().join("fake-ghc");
     write_executable(
         &fake_clash,
         &format!(
@@ -220,12 +200,14 @@ done
             calls.display()
         ),
     );
-    write_executable(&fake_ghc, "#!/usr/bin/env sh\nexit 0\n");
 
-    let ctx = make_context(temp.path(), &fake_clash, &fake_ghc);
+    let ctx = make_context(temp.path(), &fake_clash);
     let book = make_book(
         r#"
 ```haskell,clash topEntity=adder
+module Example where
+import Clash.Prelude
+
 adder :: Unsigned 8 -> Unsigned 8 -> Unsigned 8
 adder a b = a + b
 ```
@@ -237,22 +219,20 @@ adder a b = a + b
         .expect("preprocessor succeeds");
 
     let call = fs::read_to_string(calls).expect("read fake clash call");
-    assert!(call.contains("TestBook/Integration/Line2.hs"), "{call}");
+    assert!(call.contains("Example.hs"), "{call}");
     assert!(call.contains("--verilog"), "{call}");
     assert!(call.contains("-outputdir"), "{call}");
     assert!(call.contains("verilog"), "{call}");
 }
 
 #[test]
-fn test_blocks_invoke_runner_with_implicit_clash_prelude_wrapper() {
+fn test_blocks_compile_user_source_with_a_separate_runner() {
     let temp = TempDir::new().expect("tempdir");
     let calls = temp.path().join("calls.txt");
     let copied_main = temp.path().join("generated-main.hs");
     let fake_clash = temp.path().join("fake-clash");
-    let fake_ghc = temp.path().join("fake-ghc");
-    write_executable(&fake_clash, "#!/usr/bin/env sh\nexit 0\n");
     write_executable(
-        &fake_ghc,
+        &fake_clash,
         &format!(
             r#"#!/usr/bin/env sh
 set -eu
@@ -280,10 +260,13 @@ chmod +x "$out"
         ),
     );
 
-    let ctx = make_context(temp.path(), &fake_clash, &fake_ghc);
+    let ctx = make_context(temp.path(), &fake_clash);
     let book = make_book(
         r#"
 ```haskell,clash
+module Example where
+import Clash.Prelude
+
 double :: Unsigned 8 -> Unsigned 8
 double x = x + x
 
@@ -298,16 +281,31 @@ double x = x + x
         .expect("preprocessor succeeds");
 
     let call = fs::read_to_string(calls).expect("read fake runner call");
-    assert!(call.contains("Main.hs"), "{call}");
+    assert!(call.contains("MdbookClashRunner.hs"), "{call}");
+    assert!(call.contains("MdbookClashRunner.main"), "{call}");
     assert!(call.contains("-o"), "{call}");
 
-    let generated = fs::read_to_string(copied_main).expect("read generated Main.hs");
-    assert!(generated.contains("import Clash.Prelude"), "{generated}");
+    let generated = fs::read_to_string(copied_main).expect("read generated runner");
+    assert!(generated.contains("import Example"), "{generated}");
     assert!(
         generated.contains("__mdbookClashAssertEqual \"doctest 1\" (20) (double 10)"),
         "{generated}"
     );
+    assert!(!generated.contains("double x = x + x"), "{generated}");
     assert!(!generated.contains("double 21"), "{generated}");
+
+    let user_source = fs::read_to_string(find_file(temp.path(), "Example.hs"))
+        .expect("read combined user source");
+    assert!(
+        user_source.contains("module Example where"),
+        "{user_source}"
+    );
+    assert!(
+        user_source.contains("import Clash.Prelude"),
+        "{user_source}"
+    );
+    assert!(user_source.contains("double x = x + x"), "{user_source}");
+    assert!(!user_source.contains(">>>"), "{user_source}");
 }
 
 #[test]
@@ -315,7 +313,6 @@ fn command_failures_report_actionable_diagnostics() {
     let temp = TempDir::new().expect("tempdir");
     let calls = temp.path().join("clash-calls.txt");
     let fake_clash = temp.path().join("fake-failing-clash");
-    let fake_ghc = temp.path().join("fake-ghc");
     write_executable(
         &fake_clash,
         &format!(
@@ -329,9 +326,8 @@ exit 17
             calls.display()
         ),
     );
-    write_executable(&fake_ghc, "#!/usr/bin/env sh\nexit 0\n");
 
-    let ctx = make_context(temp.path(), &fake_clash, &fake_ghc);
+    let ctx = make_context(temp.path(), &fake_clash);
     let markdown = r#"
 ```haskell,clash topEntity=broken
 broken :: Unsigned 8 -> Unsigned 8
@@ -368,10 +364,8 @@ fn simulation_failures_are_not_cached() {
     let temp = TempDir::new().expect("tempdir");
     let calls = temp.path().join("test-calls.txt");
     let fake_clash = temp.path().join("fake-clash");
-    let fake_ghc = temp.path().join("fake-ghc");
-    write_executable(&fake_clash, "#!/usr/bin/env sh\nexit 0\n");
     write_executable(
-        &fake_ghc,
+        &fake_clash,
         &format!(
             r#"#!/usr/bin/env sh
 set -eu
@@ -391,7 +385,7 @@ chmod +x "$out"
         ),
     );
 
-    let ctx = make_context(temp.path(), &fake_clash, &fake_ghc);
+    let ctx = make_context(temp.path(), &fake_clash);
     let book = || make_book("```haskell,clash\n>>> id 1\n1\n```");
 
     for _ in 0..2 {
@@ -421,12 +415,11 @@ chmod +x "$out"
 }
 
 #[test]
-fn clash_blocks_with_top_entity_are_wrapped_and_synthesized() {
+fn clash_blocks_are_synthesized_without_wrapping_user_source() {
     let temp = TempDir::new().expect("tempdir");
     let calls = temp.path().join("calls.txt");
     let copied_source = temp.path().join("generated-source.hs");
     let fake_clash = temp.path().join("fake-clash");
-    let fake_ghc = temp.path().join("fake-ghc");
     write_executable(
         &fake_clash,
         &format!(
@@ -456,12 +449,14 @@ printf '{{"top_component":{{"name":"adder"}}}}\n' > "$out/clash-manifest.json"
             copied_source.display()
         ),
     );
-    write_executable(&fake_ghc, "#!/usr/bin/env sh\nexit 0\n");
 
-    let ctx = make_context(temp.path(), &fake_clash, &fake_ghc);
+    let ctx = make_context(temp.path(), &fake_clash);
     let book = make_book(
         r#"
 ~~~haskell,clash topEntity=adder
+module UserAdder where
+import Clash.Prelude
+
 adder :: Unsigned 8 -> Unsigned 8 -> Unsigned 8
 adder a b = a + b
 ~~~
@@ -473,15 +468,13 @@ adder a b = a + b
         .expect("preprocessor succeeds");
 
     let call = fs::read_to_string(calls).expect("read fake clash call");
-    assert!(call.contains("TestBook/Integration/Line2.hs"), "{call}");
+    assert!(call.contains("UserAdder.hs"), "{call}");
 
     let generated = fs::read_to_string(copied_source).expect("read generated snippet source");
-    assert!(
-        generated.contains("module TestBook.Integration.Line2 where"),
-        "{generated}"
-    );
+    assert!(generated.contains("module UserAdder where"), "{generated}");
     assert!(generated.contains("import Clash.Prelude"), "{generated}");
     assert!(generated.contains("adder a b = a + b"), "{generated}");
+    assert!(!generated.contains("{-# LANGUAGE"), "{generated}");
     assert!(!generated.contains("topEntity = adder"), "{generated}");
     assert!(call.contains("-main-is\nadder"), "{call}");
 }
@@ -491,7 +484,6 @@ fn cache_keys_are_phase_specific_and_cached_outputs_are_verified() {
     let temp = TempDir::new().expect("tempdir");
     let calls = temp.path().join("calls.txt");
     let fake_clash = temp.path().join("fake-clash");
-    let fake_ghc = temp.path().join("fake-ghc");
     write_executable(
         &fake_clash,
         &format!(
@@ -513,9 +505,8 @@ printf '{{"top_component":{{"name":"cached"}}}}\n' > "$out/clash-manifest.json"
             calls.display()
         ),
     );
-    write_executable(&fake_ghc, "#!/usr/bin/env sh\nexit 0\n");
 
-    let mut ctx = make_context_with_cache(temp.path(), &fake_clash, &fake_ghc, true);
+    let mut ctx = make_context_with_cache(temp.path(), &fake_clash, true);
     let content = r#"
 ```haskell,clash topEntity=cached
 cached :: Unsigned 8 -> Unsigned 8
@@ -568,11 +559,9 @@ cached = id
 fn invalid_configuration_is_an_error() {
     let temp = TempDir::new().expect("tempdir");
     let fake_clash = temp.path().join("fake-clash");
-    let fake_ghc = temp.path().join("fake-ghc");
     write_executable(&fake_clash, "#!/usr/bin/env sh\nexit 0\n");
-    write_executable(&fake_ghc, "#!/usr/bin/env sh\nexit 0\n");
 
-    let mut ctx = make_context(temp.path(), &fake_clash, &fake_ghc);
+    let mut ctx = make_context(temp.path(), &fake_clash);
     ctx.config
         .set("preprocessor.clash.clash-cmd", "clash --verilog")
         .expect("set invalid command type");
@@ -589,7 +578,7 @@ fn invalid_configuration_is_an_error() {
         "{err}"
     );
 
-    let mut ctx = make_context(temp.path(), &fake_clash, &fake_ghc);
+    let mut ctx = make_context(temp.path(), &fake_clash);
     ctx.config
         .set("preprocessor.clash.work-dir", "../outside")
         .expect("set unsafe work directory");
@@ -603,15 +592,13 @@ fn invalid_configuration_is_an_error() {
 #[test]
 fn invalid_attributes_are_rejected_before_doctests_run() {
     let temp = TempDir::new().expect("tempdir");
-    let calls = temp.path().join("ghc-calls.txt");
+    let calls = temp.path().join("simulation-compile-calls.txt");
     let fake_clash = temp.path().join("fake-clash");
-    let fake_ghc = temp.path().join("fake-ghc");
-    write_executable(&fake_clash, "#!/usr/bin/env sh\nexit 0\n");
     write_executable(
-        &fake_ghc,
+        &fake_clash,
         &format!("#!/usr/bin/env sh\nprintf called > '{}'\n", calls.display()),
     );
-    let ctx = make_context(temp.path(), &fake_clash, &fake_ghc);
+    let ctx = make_context(temp.path(), &fake_clash);
 
     let err = ClashPreprocessor
         .run(
@@ -635,6 +622,15 @@ fn invalid_attributes_are_rejected_before_doctests_run() {
     let err = ClashPreprocessor
         .run(
             &ctx,
+            make_book("```haskell,clash hidden\nmodule Hidden where\n```"),
+        )
+        .expect_err("hidden block without a group should fail")
+        .to_string();
+    assert!(err.contains("hidden requires group=<identifier>"), "{err}");
+
+    let err = ClashPreprocessor
+        .run(
+            &ctx,
             make_book("```haskell,clash topEntity=example yosys=\"proc\nexample = id\n```"),
         )
         .expect_err("malformed quoting should fail")
@@ -646,7 +642,6 @@ fn invalid_attributes_are_rejected_before_doctests_run() {
 fn yosys_script_attribute_requires_netlistsvg() {
     let temp = TempDir::new().expect("tempdir");
     let fake_clash = temp.path().join("fake-clash");
-    let fake_ghc = temp.path().join("fake-ghc");
 
     write_executable(
         &fake_clash,
@@ -663,9 +658,8 @@ while [ "$#" -gt 0 ]; do
 done
 "#,
     );
-    write_executable(&fake_ghc, "#!/usr/bin/env sh\nexit 0\n");
 
-    let ctx = make_context(temp.path(), &fake_clash, &fake_ghc);
+    let ctx = make_context(temp.path(), &fake_clash);
     let book = make_book(
         r#"
 ```haskell,clash topEntity=adder yosys="proc; opt" netlistsvg
@@ -677,7 +671,6 @@ adder a b = a + b
     let ok_ctx = make_context_with_yosys_and_netlistsvg(
         temp.path(),
         &fake_clash,
-        &fake_ghc,
         &temp.path().join("unused-yosys"),
         &temp.path().join("unused-netlistsvg"),
     );
@@ -721,7 +714,6 @@ fn netlistsvg_runs_yosys_json_export_and_injects_svg() {
     let netlistsvg_calls = temp.path().join("netlistsvg-calls.txt");
     let clash_verilog = temp.path().join("clash-output.v");
     let fake_clash = temp.path().join("fake-clash");
-    let fake_ghc = temp.path().join("fake-ghc");
     let fake_yosys = temp.path().join("fake-yosys");
     let fake_netlistsvg = temp.path().join("fake-netlistsvg");
 
@@ -748,7 +740,6 @@ done
             clash_verilog.display()
         ),
     );
-    write_executable(&fake_ghc, "#!/usr/bin/env sh\nexit 0\n");
     write_executable(
         &fake_yosys,
         &format!(
@@ -792,7 +783,6 @@ printf '<svg xmlns="http://www.w3.org/2000/svg"><text>adder netlist</text></svg>
     let mut ctx = make_context_with_yosys_and_netlistsvg(
         temp.path(),
         &fake_clash,
-        &fake_ghc,
         &fake_yosys,
         &fake_netlistsvg,
     );
@@ -859,7 +849,6 @@ fn missing_netlistsvg_reports_setup_hint() {
     let temp = TempDir::new().expect("tempdir");
     let yosys_calls = temp.path().join("yosys-calls.txt");
     let fake_clash = temp.path().join("fake-clash");
-    let fake_ghc = temp.path().join("fake-ghc");
     let fake_yosys = temp.path().join("fake-yosys");
     let missing_netlistsvg = temp.path().join("missing-netlistsvg");
 
@@ -878,7 +867,6 @@ while [ "$#" -gt 0 ]; do
 done
 "#,
     );
-    write_executable(&fake_ghc, "#!/usr/bin/env sh\nexit 0\n");
     write_executable(
         &fake_yosys,
         &format!(
@@ -903,7 +891,6 @@ printf '{{"modules":{{"topEntity":{{}}}}}}\n' > "$json"
     let mut ctx = make_context_with_yosys_and_netlistsvg(
         temp.path(),
         &fake_clash,
-        &fake_ghc,
         &fake_yosys,
         &missing_netlistsvg,
     );
@@ -944,24 +931,32 @@ wire x = x
 fn clash_blocks_can_be_simulated_and_synthesized() {
     let temp = TempDir::new().expect("tempdir");
     let clash_calls = temp.path().join("clash-calls.txt");
-    let ghc_calls = temp.path().join("ghc-calls.txt");
+    let simulation_compile_calls = temp.path().join("simulation-compile-calls.txt");
+    let clash_args = temp.path().join("clash-args.txt");
     let copied_synth_source = temp.path().join("synth-source.hs");
     let copied_main = temp.path().join("main-source.hs");
     let fake_clash = temp.path().join("fake-clash");
-    let fake_ghc = temp.path().join("fake-ghc");
 
     write_executable(
         &fake_clash,
         &format!(
             r#"#!/usr/bin/env sh
 set -eu
-printf 'clash\n' >> '{}'
+printf '%s\n' "$@" >> '{}'
+mode=simulation
 src=
 out=
 while [ "$#" -gt 0 ]; do
   case "$1" in
+    --verilog)
+      mode=synthesis
+      ;;
     *.hs)
       src="$1"
+      ;;
+    -o)
+      shift
+      out="$1"
       ;;
     -outputdir)
       shift
@@ -970,45 +965,31 @@ while [ "$#" -gt 0 ]; do
   esac
   shift || true
 done
-cp "$src" '{}'
-mkdir -p "$out"
-printf 'module increment(); endmodule\n' > "$out/increment.v"
-printf '{{"top_component":{{"name":"increment"}}}}\n' > "$out/clash-manifest.json"
+if [ "$mode" = synthesis ]; then
+  printf 'clash\n' >> '{}'
+  cp "$src" '{}'
+  mkdir -p "$out"
+  printf 'module increment(); endmodule\n' > "$out/increment.v"
+  printf '{{"top_component":{{"name":"increment"}}}}\n' > "$out/clash-manifest.json"
+else
+  printf 'simulation-compile\n' >> '{}'
+  cp "$src" '{}'
+  printf '#!/usr/bin/env sh\nexit 0\n' > "$out"
+  chmod +x "$out"
+fi
 "#,
+            clash_args.display(),
             clash_calls.display(),
-            copied_synth_source.display()
-        ),
-    );
-    write_executable(
-        &fake_ghc,
-        &format!(
-            r#"#!/usr/bin/env sh
-set -eu
-printf 'ghc\n' >> '{}'
-src=
-out=
-while [ "$#" -gt 0 ]; do
-  case "$1" in
-    -o)
-      shift
-      out="$1"
-      ;;
-    *.hs)
-      src="$1"
-      ;;
-  esac
-  shift || true
-done
-cp "$src" '{}'
-printf '#!/usr/bin/env sh\nexit 0\n' > "$out"
-chmod +x "$out"
-"#,
-            ghc_calls.display(),
+            copied_synth_source.display(),
+            simulation_compile_calls.display(),
             copied_main.display()
         ),
     );
 
-    let ctx = make_context(temp.path(), &fake_clash, &fake_ghc);
+    let mut ctx = make_context(temp.path(), &fake_clash);
+    ctx.config
+        .set("preprocessor.clash.clash-args", vec!["-fcommon"])
+        .expect("set common Clash arguments");
     let book = make_book(
         r#"
 ```haskell,clash topEntity=increment
@@ -1033,11 +1014,20 @@ increment x = x + 1
         1
     );
     assert_eq!(
-        fs::read_to_string(ghc_calls)
-            .expect("read ghc calls")
+        fs::read_to_string(simulation_compile_calls)
+            .expect("read simulation compiler calls")
             .lines()
             .count(),
         1
+    );
+    assert_eq!(
+        fs::read_to_string(clash_args)
+            .expect("read Clash arguments")
+            .lines()
+            .filter(|argument| *argument == "-fcommon")
+            .count(),
+        2,
+        "common Clash arguments should apply to simulation and synthesis"
     );
 
     let synth_source = fs::read_to_string(copied_synth_source).expect("read synth source");
@@ -1058,56 +1048,30 @@ increment x = x + 1
 #[test]
 fn grouped_blocks_compile_once_run_per_doctest_block_and_synthesize_independently() {
     let temp = TempDir::new().expect("tempdir");
-    let ghc_calls = temp.path().join("ghc-calls.txt");
+    let simulation_compile_calls = temp.path().join("simulation-compile-calls.txt");
     let simulation_calls = temp.path().join("simulation-calls.txt");
     let generated_main = temp.path().join("group-main.hs");
     let clash_calls = temp.path().join("clash-calls.txt");
     let synth_prefix = temp.path().join("synth-source");
     let fake_clash = temp.path().join("fake-clash");
-    let fake_ghc = temp.path().join("fake-ghc");
 
-    write_executable(
-        &fake_ghc,
-        &format!(
-            r#"#!/usr/bin/env sh
-set -eu
-printf 'ghc\n' >> '{}'
-src=
-out=
-while [ "$#" -gt 0 ]; do
-  case "$1" in
-    -o)
-      shift
-      out="$1"
-      ;;
-    *.hs)
-      src="$1"
-      ;;
-  esac
-  shift || true
-done
-cp "$src" '{}'
-printf '#!/usr/bin/env sh\nprintf "%%s\\n" "$MDBOOK_CLASH_BLOCK" >> "{}"\n' > "$out"
-chmod +x "$out"
-"#,
-            ghc_calls.display(),
-            generated_main.display(),
-            simulation_calls.display(),
-        ),
-    );
     write_executable(
         &fake_clash,
         &format!(
             r#"#!/usr/bin/env sh
 set -eu
-printf 'clash\n' >> '{}'
+mode=simulation
 src=
 out=
 top=
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    *.hs)
-      src="$1"
+    --verilog)
+      mode=synthesis
+      ;;
+    -o)
+      shift
+      out="$1"
       ;;
     -main-is)
       shift
@@ -1117,28 +1081,47 @@ while [ "$#" -gt 0 ]; do
       shift
       out="$1"
       ;;
+    *.hs)
+      src="$1"
+      ;;
   esac
   shift || true
 done
-cp "$src" '{}-'"$top"'.hs'
-mkdir -p "$out"
-printf 'module %s(); endmodule\n' "$top" > "$out/$top.v"
-printf '{{"top_component":{{"name":"%s"}}}}\n' "$top" > "$out/clash-manifest.json"
+if [ "$mode" = synthesis ]; then
+  printf 'clash\n' >> '{}'
+  cp "$src" '{}-'"$top"'.hs'
+  mkdir -p "$out"
+  printf 'module %s(); endmodule\n' "$top" > "$out/$top.v"
+  printf '{{"top_component":{{"name":"%s"}}}}\n' "$top" > "$out/clash-manifest.json"
+else
+  printf 'simulation-compile\n' >> '{}'
+  cp "$src" '{}'
+  printf '#!/usr/bin/env sh\nprintf "%%s\\n" "$MDBOOK_CLASH_BLOCK" >> "{}"\n' > "$out"
+  chmod +x "$out"
+fi
 "#,
             clash_calls.display(),
             synth_prefix.display(),
+            simulation_compile_calls.display(),
+            generated_main.display(),
+            simulation_calls.display(),
         ),
     );
 
-    let ctx = make_context(temp.path(), &fake_clash, &fake_ghc);
+    let ctx = make_context(temp.path(), &fake_clash);
     let book = make_book(
         r#"
+```haskell,clash group=counter hidden
+module Counter where
+import Clash.Prelude
+```
+
 ```haskell,clash group=counter
 offset :: Unsigned 8
 offset = 1
 ```
 
-```haskell,clash id=counter topEntity=increment
+```haskell,clash group=counter topEntity=increment
 increment x = x + offset
 
 >>> increment 4
@@ -1154,13 +1137,13 @@ decrement x = x - offset
 "#,
     );
 
-    ClashPreprocessor
+    let processed = ClashPreprocessor
         .run(&ctx, book)
         .expect("grouped blocks should succeed");
 
     assert_eq!(
-        fs::read_to_string(&ghc_calls)
-            .expect("read GHC calls")
+        fs::read_to_string(&simulation_compile_calls)
+            .expect("read simulation compiler calls")
             .lines()
             .count(),
         1,
@@ -1171,7 +1154,7 @@ decrement x = x - offset
             .expect("read simulation calls")
             .lines()
             .collect::<Vec<_>>(),
-        ["2", "3"],
+        ["3", "4"],
         "each doctest block should be run separately"
     );
     assert_eq!(
@@ -1184,15 +1167,25 @@ decrement x = x - offset
     );
 
     let main = fs::read_to_string(generated_main).expect("read grouped Main module");
-    assert!(main.contains("offset = 1"), "{main}");
-    assert!(main.contains("increment x = x + offset"), "{main}");
-    assert!(main.contains("decrement x = x - offset"), "{main}");
-    assert!(main.contains("P.Just \"2\" -> do"), "{main}");
+    assert!(main.contains("import Counter"), "{main}");
+    assert!(!main.contains("offset = 1"), "{main}");
+    assert!(!main.contains("increment x = x + offset"), "{main}");
+    assert!(!main.contains("decrement x = x - offset"), "{main}");
     assert!(main.contains("P.Just \"3\" -> do"), "{main}");
+    assert!(main.contains("P.Just \"4\" -> do"), "{main}");
+
+    let BookItem::Chapter(chapter) = &processed.items[0] else {
+        panic!("expected processed chapter");
+    };
+    assert!(!chapter.content.contains("module Counter where"));
+    assert!(!chapter.content.contains("group=counter hidden"));
+    assert!(chapter.content.contains("offset = 1"));
 
     for top in ["increment", "decrement"] {
         let source = fs::read_to_string(temp.path().join(format!("synth-source-{top}.hs")))
             .expect("read grouped synthesis module");
+        assert!(source.contains("module Counter where"), "{source}");
+        assert!(source.contains("import Clash.Prelude"), "{source}");
         assert!(source.contains("offset = 1"), "{source}");
         assert!(source.contains("increment x = x + offset"), "{source}");
         assert!(source.contains("decrement x = x - offset"), "{source}");

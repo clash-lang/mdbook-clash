@@ -1,6 +1,5 @@
 use anyhow::Result;
 use fs2::FileExt;
-use log::debug;
 use mdbook_preprocessor::book::{Book, BookItem, Chapter};
 use mdbook_preprocessor::errors::Error;
 use mdbook_preprocessor::{Preprocessor, PreprocessorContext};
@@ -26,8 +25,6 @@ struct Config {
     cache_key: String,
     clash_cmd: Vec<String>,
     clash_args: Vec<String>,
-    ghc_cmd: Vec<String>,
-    ghc_args: Vec<String>,
     test_exe_args: Vec<String>,
     yosys_cmd: Vec<String>,
     netlistsvg_cmd: Vec<String>,
@@ -39,7 +36,8 @@ struct ClashBlock {
     code: String,
     block_index: usize,
     start_line: usize,
-    insert_offset: usize,
+    start_offset: usize,
+    end_offset: usize,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -48,6 +46,7 @@ struct BlockAttrs {
     top_entity: Option<String>,
     yosys_commands: Vec<String>,
     netlistsvg: bool,
+    hidden: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -118,27 +117,25 @@ fn process_chapter(process_context: &ProcessContext, chapter: &mut Chapter) -> R
         }
     }
 
-    let mut insertions = Vec::new();
+    let mut edits = Vec::new();
     for unit in units {
         if unit.iter().any(|block| has_doctests(&block.code)) {
             test_blocks(process_context, &chapter_path, &unit)?;
         }
         let definitions = combined_definitions(&unit);
         for block in unit {
-            debug!(
-                "Processing block {} in {:?}",
-                block.block_index, chapter_path
-            );
             let addition = process_block(process_context, &chapter_path, block, &definitions)?;
-            if !addition.is_empty() {
-                insertions.push((block.insert_offset, addition));
+            if block.attrs.hidden {
+                edits.push((block.start_offset, block.end_offset, addition));
+            } else if !addition.is_empty() {
+                edits.push((block.end_offset, block.end_offset, addition));
             }
         }
     }
 
-    insertions.sort_by_key(|(offset, _)| *offset);
-    for (offset, addition) in insertions.into_iter().rev() {
-        chapter.content.insert_str(offset, &addition);
+    edits.sort_by_key(|(start, _, _)| *start);
+    for (start, end, replacement) in edits.into_iter().rev() {
+        chapter.content.replace_range(start..end, &replacement);
     }
 
     for sub_item in chapter.sub_items.iter_mut() {
@@ -185,10 +182,12 @@ fn process_block(
     let Some(top_entity) = block.attrs.top_entity.as_deref() else {
         return Ok(String::new());
     };
-    let synthesis = synthesize_snippet_block(
+    let module_name = source_module_name(definitions);
+    let synthesis = synthesize_module(
         process_context,
         chapter_path,
         block,
+        &module_name,
         top_entity,
         definitions,
     )?;
@@ -200,6 +199,16 @@ fn process_block(
 }
 
 fn validate_block(chapter_path: &Path, block: &ClashBlock) -> Result<(), Error> {
+    if block.attrs.hidden && block.attrs.group.is_none() {
+        return Err(Error::msg(format!(
+            "mdbook-clash: hidden requires group=<identifier>\n\
+             source: {}:{}:1\n\
+             note: Hidden blocks must belong to a group so their source can be included elsewhere",
+            display_source_path(chapter_path),
+            block.start_line
+        )));
+    }
+
     if !block.attrs.yosys_commands.is_empty() && !block.attrs.netlistsvg {
         return Err(Error::msg(format!(
             "mdbook-clash: yosys=<commands> requires netlistsvg\n\
@@ -222,26 +231,6 @@ fn validate_block(chapter_path: &Path, block: &ClashBlock) -> Result<(), Error> 
     Ok(())
 }
 
-fn synthesize_snippet_block(
-    process_context: &ProcessContext,
-    chapter_path: &Path,
-    block: &ClashBlock,
-    top_entity: &str,
-    definitions: &str,
-) -> Result<SynthesisResult, Error> {
-    let module_name = generated_module_name(process_context, chapter_path, block);
-    let source = render_snippet_synth_module(&module_name, definitions);
-
-    synthesize_module(
-        process_context,
-        chapter_path,
-        block,
-        &module_name,
-        top_entity,
-        source,
-    )
-}
-
 #[derive(Debug)]
 struct SynthesisResult {
     verilog_dir: PathBuf,
@@ -256,7 +245,7 @@ fn synthesize_module(
     block: &ClashBlock,
     module_name: &str,
     top_entity: &str,
-    source: String,
+    source: &str,
 ) -> Result<SynthesisResult, Error> {
     let cache_key = phase_cache_key(
         process_context,
@@ -277,9 +266,9 @@ fn synthesize_module(
 
     if cache_hit(process_context, &artifact_dir, "synth", &cache_key) {
         eprintln!(
-            " INFO mdbook-clash: synthesis cache hit for {} block {}",
+            " INFO mdbook-clash: synthesis cache hit for {}:{}",
             display_source_path(chapter_path),
-            block.block_index
+            block.start_line
         );
         let top_component = read_top_component(&verilog_dir)?;
         let output_hash = directory_hash(&verilog_dir)?;
@@ -311,9 +300,8 @@ fn synthesize_module(
     args.push(verilog_dir.display().to_string());
 
     eprintln!(
-        " INFO mdbook-clash: synthesizing {} block {} line {}",
+        " INFO mdbook-clash: synthesizing {}:{}",
         display_source_path(chapter_path),
-        block.block_index,
         block.start_line
     );
     eprintln!(
@@ -351,9 +339,9 @@ fn synthesize_module(
     write_cache_manifest(process_context, &artifact_dir, "synth", &cache_key)?;
 
     eprintln!(
-        " INFO mdbook-clash: synthesized {} block {}",
+        " INFO mdbook-clash: synthesized {}:{}",
         display_source_path(chapter_path),
-        block.block_index
+        block.start_line
     );
 
     Ok(SynthesisResult {
@@ -392,9 +380,9 @@ fn netlistsvg_block(
 
     if cache_hit(process_context, &artifact_dir, "netlistsvg", &cache_key) {
         eprintln!(
-            " INFO mdbook-clash: netlistsvg cache hit for {} block {}",
+            " INFO mdbook-clash: netlistsvg cache hit for {}:{}",
             display_source_path(chapter_path),
-            block.block_index
+            block.start_line
         );
         let svg = fs::read_to_string(&svg_path)
             .map_err(|err| Error::msg(format!("reading cached netlistsvg output failed: {err}")))?;
@@ -438,9 +426,9 @@ fn netlistsvg_block(
 
     let yosys_args = vec!["-s".to_string(), script_path.display().to_string()];
     eprintln!(
-        " INFO mdbook-clash: running Yosys JSON export for {} block {}",
+        " INFO mdbook-clash: running Yosys JSON export for {}:{}",
         display_source_path(chapter_path),
-        block.block_index
+        block.start_line
     );
     eprintln!(
         " INFO mdbook-clash: running {}",
@@ -478,9 +466,9 @@ fn netlistsvg_block(
         svg_path.display().to_string(),
     ];
     eprintln!(
-        " INFO mdbook-clash: running netlistsvg for {} block {}",
+        " INFO mdbook-clash: running netlistsvg for {}:{}",
         display_source_path(chapter_path),
-        block.block_index
+        block.start_line
     );
     eprintln!(
         " INFO mdbook-clash: running {}",
@@ -546,28 +534,41 @@ fn test_blocks(
         .copied()
         .filter(|block| has_doctests(&block.code))
         .collect::<Vec<_>>();
-    let source = render_test_module_for_blocks(blocks);
+    let snippet_source = combined_definitions(blocks);
+    let snippet_module = source_module_name(&snippet_source);
+    if snippet_module == "MdbookClashRunner" {
+        return Err(Error::msg(format!(
+            "mdbook-clash: source module name `MdbookClashRunner` is reserved\n\
+             source: {}:{}:1",
+            display_source_path(chapter_path),
+            first_block.start_line
+        )));
+    }
+    let runner_source = render_test_runner(blocks, &snippet_module);
     let cache_key = phase_cache_key(
         process_context,
         "test",
         serde_json::json!({
-            "source": source,
-            "compile_command": process_context.config.ghc_cmd,
-            "compiler_fingerprint": command_fingerprint(&process_context.config.ghc_cmd),
-            "compile_args": process_context.config.ghc_args,
+            "snippet_source": snippet_source,
+            "snippet_module": snippet_module,
+            "runner_source": runner_source,
+            "compile_command": process_context.config.clash_cmd,
+            "compiler_fingerprint": command_fingerprint(&process_context.config.clash_cmd),
+            "compile_args": process_context.config.clash_args,
             "run_args": process_context.config.test_exe_args,
         }),
     )?;
     let artifact_dir = artifact_dir(process_context, "test", &cache_key);
     let _lock = lock_artifact(&artifact_dir)?;
-    let main_path = artifact_dir.join("Main.hs");
+    let source_dir = artifact_dir.join("src");
+    let snippet_path = module_path_for(&source_dir, &snippet_module);
+    let runner_path = module_path_for(&source_dir, "MdbookClashRunner");
     let exe_path = artifact_dir.join(executable_name("mdbook-clash-test"));
 
     if cache_hit(process_context, &artifact_dir, "test", &cache_key) {
         eprintln!(
-            " INFO mdbook-clash: simulation cache hit for {} block(s) {}",
-            display_source_path(chapter_path),
-            block_indices(&test_blocks)
+            " INFO mdbook-clash: simulation cache hit for {}",
+            display_source_path(chapter_path)
         );
         return Ok(());
     }
@@ -576,46 +577,50 @@ fn test_blocks(
         fs::remove_dir_all(&artifact_dir)
             .map_err(|err| Error::msg(format!("clearing artifact directory failed: {err}")))?;
     }
-    fs::create_dir_all(&artifact_dir)
+    fs::create_dir_all(snippet_path.parent().expect("snippet file has a parent"))
         .map_err(|err| Error::msg(format!("creating test artifact directory failed: {err}")))?;
-    fs::write(&main_path, source)
-        .map_err(|err| Error::msg(format!("writing generated test module failed: {err}")))?;
+    fs::write(&snippet_path, snippet_source)
+        .map_err(|err| Error::msg(format!("writing combined source module failed: {err}")))?;
+    fs::write(&runner_path, runner_source)
+        .map_err(|err| Error::msg(format!("writing generated test runner failed: {err}")))?;
 
-    let mut compile_args = process_context.config.ghc_args.clone();
-    compile_args.push(main_path.display().to_string());
+    let mut compile_args = process_context.config.clash_args.clone();
+    compile_args.push(runner_path.display().to_string());
+    compile_args.push(format!("-i{}", source_dir.display()));
+    compile_args.push("-main-is".to_string());
+    compile_args.push("MdbookClashRunner.main".to_string());
     compile_args.push("-o".to_string());
     compile_args.push(exe_path.display().to_string());
 
     eprintln!(
-        " INFO mdbook-clash: compiling simulation for {} block(s) {}",
-        display_source_path(chapter_path),
-        block_indices(blocks)
+        " INFO mdbook-clash: compiling simulation for {}",
+        display_source_path(chapter_path)
     );
     eprintln!(
         " INFO mdbook-clash: compiling {}",
-        shell_join_all(&process_context.config.ghc_cmd, &compile_args)
+        shell_join_all(&process_context.config.clash_cmd, &compile_args)
     );
 
-    let compile_output = run_configured_command(&process_context.config.ghc_cmd, &compile_args)
+    let compile_output = run_configured_command(&process_context.config.clash_cmd, &compile_args)
         .map_err(|err| {
-            command_error(
-                "simulation compile",
-                chapter_path,
-                first_block,
-                &main_path,
-                &process_context.config.ghc_cmd,
-                &compile_args,
-                err,
-            )
-        })?;
+        command_error(
+            "simulation compile",
+            chapter_path,
+            first_block,
+            &runner_path,
+            &process_context.config.clash_cmd,
+            &compile_args,
+            err,
+        )
+    })?;
 
     if !compile_output.status.success() {
         return Err(command_failure(
             "simulation compile",
             chapter_path,
             first_block,
-            &main_path,
-            &process_context.config.ghc_cmd,
+            &runner_path,
+            &process_context.config.clash_cmd,
             &compile_args,
             &compile_output,
         ));
@@ -624,9 +629,8 @@ fn test_blocks(
     for block in test_blocks {
         let run_args = process_context.config.test_exe_args.clone();
         eprintln!(
-            " INFO mdbook-clash: simulating {} block {} line {}",
+            " INFO mdbook-clash: simulating {}:{}",
             display_source_path(chapter_path),
-            block.block_index,
             block.start_line
         );
         let run_output = run_configured_command_with_env(
@@ -663,20 +667,11 @@ fn test_blocks(
     write_cache_manifest(process_context, &artifact_dir, "test", &cache_key)?;
 
     eprintln!(
-        " INFO mdbook-clash: simulated {} block(s) {}",
-        display_source_path(chapter_path),
-        block_indices(blocks)
+        " INFO mdbook-clash: simulated {}",
+        display_source_path(chapter_path)
     );
 
     Ok(())
-}
-
-fn block_indices(blocks: &[&ClashBlock]) -> String {
-    blocks
-        .iter()
-        .map(|block| block.block_index.to_string())
-        .collect::<Vec<_>>()
-        .join(", ")
 }
 
 fn find_clash_blocks(content: &str, chapter_path: &Path) -> Result<Vec<ClashBlock>, Error> {
@@ -710,7 +705,8 @@ fn find_clash_blocks(content: &str, chapter_path: &Path) -> Result<Vec<ClashBloc
                     code,
                     block_index,
                     start_line,
-                    insert_offset: range.end,
+                    start_offset,
+                    end_offset: range.end,
                 });
             }
             Event::Text(text) => {
@@ -807,10 +803,12 @@ fn parse_block_info(info: &str) -> Result<Option<BlockAttrs>, String> {
     {
         if attr == "netlistsvg" {
             attrs.netlistsvg = true;
-        } else if let Some(value) = attr
-            .strip_prefix("group=")
-            .or_else(|| attr.strip_prefix("id="))
-        {
+        } else if attr == "hidden" {
+            if attrs.hidden {
+                return Err("hidden was specified more than once".to_string());
+            }
+            attrs.hidden = true;
+        } else if let Some(value) = attr.strip_prefix("group=") {
             if value.is_empty() {
                 return Err("group requires an identifier".to_string());
             }
@@ -866,43 +864,19 @@ fn module_path_for(src_dir: &Path, module_name: &str) -> PathBuf {
     path
 }
 
-fn generated_module_name(
-    process_context: &ProcessContext,
-    chapter_path: &Path,
-    block: &ClashBlock,
-) -> String {
-    let book = process_context
-        .ctx
-        .config
-        .book
-        .title
-        .as_deref()
-        .map(sanitize_module_component)
-        .unwrap_or_else(|| "Book".to_string());
-    let page = chapter_path
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .map(sanitize_module_component)
-        .filter(|part| !part.is_empty())
-        .unwrap_or_else(|| "Page".to_string());
-    format!("{}.{}.Line{}", book, page, block.start_line)
-}
-
-fn render_snippet_synth_module(module_name: &str, code: &str) -> String {
-    let mut module = String::new();
-    module.push_str("{-# LANGUAGE DataKinds #-}\n");
-    module.push_str("{-# LANGUAGE NoImplicitPrelude #-}\n");
-    module.push_str("{-# LANGUAGE NumericUnderscores #-}\n");
-    module.push_str("{-# LANGUAGE TypeApplications #-}\n\n");
-    module.push_str("module ");
-    module.push_str(module_name);
-    module.push_str(" where\n\n");
-    module.push_str("import Clash.Prelude\n\n");
-    module.push_str(code);
-    if !code.ends_with('\n') {
-        module.push('\n');
-    }
-    module
+fn source_module_name(source: &str) -> String {
+    source
+        .lines()
+        .map(str::trim_start)
+        .find_map(|line| {
+            let declaration = line.strip_prefix("module ")?.trim_start();
+            let name = declaration
+                .chars()
+                .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '_' || *ch == '.')
+                .collect::<String>();
+            (!name.is_empty()).then_some(name)
+        })
+        .unwrap_or_else(|| "Main".to_string())
 }
 
 fn phase_cache_key(
@@ -1102,17 +1076,7 @@ fn executable_name(base: &str) -> String {
 }
 
 fn run_configured_command(cmd: &[String], args: &[String]) -> std::io::Result<Output> {
-    let Some((program, prefix_args)) = cmd.split_first() else {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "empty command vector",
-        ));
-    };
-
-    let mut command = Command::new(program);
-    command.args(prefix_args);
-    command.args(args);
-    command.output()
+    configured_command(cmd, args).output()
 }
 
 fn run_configured_command_with_env(
@@ -1121,18 +1085,18 @@ fn run_configured_command_with_env(
     key: &str,
     value: &str,
 ) -> std::io::Result<Output> {
-    let Some((program, prefix_args)) = cmd.split_first() else {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "empty command vector",
-        ));
-    };
-
-    let mut command = Command::new(program);
-    command.args(prefix_args);
-    command.args(args);
+    let mut command = configured_command(cmd, args);
     command.env(key, value);
     command.output()
+}
+
+fn configured_command(cmd: &[String], args: &[String]) -> Command {
+    let (program, prefix_args) = cmd
+        .split_first()
+        .expect("configured commands are validated as non-empty");
+    let mut command = Command::new(program);
+    command.args(prefix_args).args(args);
+    command
 }
 
 fn command_error(
@@ -1203,31 +1167,16 @@ fn command_failure(
     ))
 }
 
-#[cfg(test)]
-fn render_test_module(code: &str) -> String {
-    let block = ClashBlock {
-        attrs: BlockAttrs::default(),
-        code: code.to_string(),
-        block_index: 1,
-        start_line: 1,
-        insert_offset: 0,
-    };
-    render_test_module_for_blocks(&[&block])
-}
-
-fn render_test_module_for_blocks(blocks: &[&ClashBlock]) -> String {
+fn render_test_runner(blocks: &[&ClashBlock], snippet_module: &str) -> String {
     let mut module = String::new();
-    module.push_str("{-# LANGUAGE DataKinds #-}\n");
-    module.push_str("{-# LANGUAGE FlexibleContexts #-}\n");
-    module.push_str("{-# LANGUAGE NoImplicitPrelude #-}\n");
-    module.push_str("{-# LANGUAGE NumericUnderscores #-}\n");
-    module.push_str("{-# LANGUAGE TypeApplications #-}\n");
-    module.push('\n');
-    module.push_str("module Main where\n\n");
+    module.push_str("module MdbookClashRunner where\n\n");
     module.push_str("import Clash.Prelude\n");
     module.push_str("import qualified Prelude as P\n");
     module.push_str("import System.Environment (lookupEnv)\n");
     module.push_str("import System.Exit (exitFailure)\n\n");
+    module.push_str("import ");
+    module.push_str(snippet_module);
+    module.push_str("\n\n");
     module.push_str("__mdbookClashAssertEqual :: (Eq a, Show a) => P.String -> a -> a -> IO ()\n");
     module.push_str("__mdbookClashAssertEqual name expected actual =\n");
     module.push_str("  if expected == actual\n");
@@ -1237,10 +1186,7 @@ fn render_test_module_for_blocks(blocks: &[&ClashBlock]) -> String {
     module.push_str("      P.putStrLn (\"expected: \" P.++ P.show expected)\n");
     module.push_str("      P.putStrLn (\"actual:   \" P.++ P.show actual)\n");
     module.push_str("      exitFailure\n\n");
-    for block in blocks {
-        module.push_str(&parse_doctest_lines(&block.code).definitions);
-    }
-    module.push_str("\nmain :: IO ()\n");
+    module.push_str("main :: IO ()\n");
     module.push_str("main = do\n");
     module.push_str("  selector <- lookupEnv \"MDBOOK_CLASH_BLOCK\"\n");
     module.push_str("  case selector of\n");
@@ -1311,37 +1257,6 @@ fn strip_doctests(code: &str) -> String {
     parse_doctest_lines(code).definitions
 }
 
-fn sanitize_module_component(input: &str) -> String {
-    let mut out = String::new();
-    let mut capitalize_next = true;
-
-    for ch in input.chars() {
-        if ch.is_ascii_alphanumeric() {
-            if capitalize_next {
-                out.push(ch.to_ascii_uppercase());
-                capitalize_next = false;
-            } else {
-                out.push(ch);
-            }
-        } else {
-            capitalize_next = true;
-        }
-    }
-
-    if out.is_empty() {
-        "Book".to_string()
-    } else if out
-        .chars()
-        .next()
-        .map(|ch| ch.is_ascii_uppercase())
-        .unwrap_or(false)
-    {
-        out
-    } else {
-        format!("M{out}")
-    }
-}
-
 fn cleanup_ephemeral_files(process_context: &ProcessContext) -> Result<(), Error> {
     if process_context.config.keep_artifacts || process_context.config.cache {
         return Ok(());
@@ -1360,7 +1275,6 @@ impl Config {
     fn from_context(ctx: &PreprocessorContext) -> Result<Self, Error> {
         let work_dir = work_dir(ctx)?;
         let clash_cmd = get_command(ctx, "clash-cmd", &["clash"])?;
-        let ghc_cmd = get_command(ctx, "ghc-cmd", &["ghc"])?;
         let yosys_cmd = get_command(ctx, "yosys-cmd", &["yosys"])?;
         let netlistsvg_cmd = get_command(ctx, "netlistsvg-cmd", &["netlistsvg"])?;
 
@@ -1376,8 +1290,6 @@ impl Config {
             cache_key: get_string(ctx, "cache-key", "")?,
             clash_cmd,
             clash_args: get_string_vec(ctx, "clash-args", &[])?,
-            ghc_cmd,
-            ghc_args: get_string_vec(ctx, "ghc-args", &["-package", "clash-prelude"])?,
             test_exe_args: get_string_vec(ctx, "test-exe-args", &[])?,
             yosys_cmd,
             netlistsvg_cmd,
@@ -1533,24 +1445,34 @@ adder x y = x + y
 
     #[test]
     fn renders_doctest_assertion() {
-        let module = render_test_module(
-            r#"
+        let block = ClashBlock {
+            attrs: BlockAttrs::default(),
+            code: r#"
 double x = x + x
 
 >>> double 21
 42
-"#,
-        );
-        assert!(module.contains("double x = x + x"));
-        assert!(module.contains("__mdbookClashAssertEqual \"doctest 1\" (42) (double 21)"));
+"#
+            .to_string(),
+            block_index: 1,
+            start_line: 1,
+            start_offset: 0,
+            end_offset: 0,
+        };
+        let runner = render_test_runner(&[&block], "Example");
+        assert!(runner.contains("module MdbookClashRunner where"));
+        assert!(runner.contains("import Example"));
+        assert!(!runner.contains("double x = x + x"));
+        assert!(runner.contains("__mdbookClashAssertEqual \"doctest 1\" (42) (double 21)"));
     }
 
     #[test]
-    fn renders_snippet_synth_module() {
-        let module = render_snippet_synth_module("MdbookClash.Generated.X", "adder a b = a + b\n");
-        assert!(module.contains("module MdbookClash.Generated.X where"));
-        assert!(module.contains("import Clash.Prelude"));
-        assert!(!module.contains("topEntity = adder"));
+    fn finds_user_source_module_name() {
+        assert_eq!(
+            source_module_name("{-# LANGUAGE TypeApplications #-}\nmodule Example.Counter where\n"),
+            "Example.Counter"
+        );
+        assert_eq!(source_module_name("value = 1\n"), "Main");
     }
 
     #[test]

@@ -175,6 +175,10 @@ separately from the complete group, and its Yosys/netlistsvg options apply only
 to that block. A `hidden` block is removed from the rendered Markdown but stays
 in the concatenated source. Using `hidden` without `group=...` is an error.
 
+Every visible grouped block links to a complete, copyable Haskell listing at the
+end of the chapter. The listing concatenates the group in chapter order,
+includes hidden source, and removes doctest prompts and expected output.
+
 ## Synthesis examples
 
 Add `topEntity=...` to synthesize a binding. The module and imports still come

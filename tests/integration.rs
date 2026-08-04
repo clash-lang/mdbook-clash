@@ -1177,18 +1177,41 @@ decrement x = x - offset
     let BookItem::Chapter(chapter) = &processed.items[0] else {
         panic!("expected processed chapter");
     };
-    assert!(!chapter.content.contains("module Counter where"));
     assert!(!chapter.content.contains("group=counter hidden"));
     assert!(chapter.content.contains("offset = 1"));
+    assert_eq!(chapter.content.matches("[View full listing]").count(), 3);
+    assert_eq!(
+        chapter.content.matches("#mdbook-clash-listing-1").count(),
+        3
+    );
+    let listing = chapter
+        .content
+        .split_once("## Full code listings")
+        .expect("full listing section")
+        .1;
+    assert!(listing.contains("### Group <code>counter</code>"));
+    assert!(listing.contains("module Counter where"));
+    assert!(listing.contains("import Clash.Prelude"));
+    assert!(listing.contains("import Clash.Prelude\n\noffset :: Unsigned 8"));
+    assert!(listing.contains("offset = 1"));
+    assert!(listing.contains("increment x = x + offset"));
+    assert!(listing.contains("decrement x = x - offset"));
+    assert!(!listing.contains(">>>"), "{listing}");
+    assert_eq!(chapter.content.matches("module Counter where").count(), 1);
 
     for top in ["increment", "decrement"] {
         let source = fs::read_to_string(temp.path().join(format!("synth-source-{top}.hs")))
             .expect("read grouped synthesis module");
         assert!(source.contains("module Counter where"), "{source}");
         assert!(source.contains("import Clash.Prelude"), "{source}");
+        assert!(
+            source.contains("import Clash.Prelude\n\noffset :: Unsigned 8"),
+            "{source}"
+        );
         assert!(source.contains("offset = 1"), "{source}");
         assert!(source.contains("increment x = x + offset"), "{source}");
         assert!(source.contains("decrement x = x - offset"), "{source}");
+        assert!(!source.ends_with('\n'), "{source:?}");
         assert!(!source.contains(">>>"), "{source}");
     }
 }

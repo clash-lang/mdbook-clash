@@ -118,17 +118,26 @@ fn process_chapter(process_context: &ProcessContext, chapter: &mut Chapter) -> R
     }
 
     let mut edits = Vec::new();
+    let mut listings = Vec::new();
     for unit in units {
         if unit.iter().any(|block| has_doctests(&block.code)) {
             test_blocks(process_context, &chapter_path, &unit)?;
         }
         let definitions = combined_definitions(&unit);
+        let listing_link = unit[0].attrs.group.as_deref().map(|group| {
+            let anchor = format!("mdbook-clash-listing-{}", listings.len() + 1);
+            listings.push(render_group_listing(&anchor, group, &definitions));
+            format!("\n\n[View full listing](#{anchor})\n")
+        });
         for block in unit {
             let addition = process_block(process_context, &chapter_path, block, &definitions)?;
             if block.attrs.hidden {
                 edits.push((block.start_offset, block.end_offset, addition));
-            } else if !addition.is_empty() {
-                edits.push((block.end_offset, block.end_offset, addition));
+            } else {
+                let replacement = format!("{}{addition}", listing_link.as_deref().unwrap_or(""));
+                if !replacement.is_empty() {
+                    edits.push((block.end_offset, block.end_offset, replacement));
+                }
             }
         }
     }
@@ -136,6 +145,12 @@ fn process_chapter(process_context: &ProcessContext, chapter: &mut Chapter) -> R
     edits.sort_by_key(|(start, _, _)| *start);
     for (start, end, replacement) in edits.into_iter().rev() {
         chapter.content.replace_range(start..end, &replacement);
+    }
+    if !listings.is_empty() {
+        chapter.content.push_str("\n\n## Full code listings\n");
+        for listing in listings {
+            chapter.content.push_str(&listing);
+        }
     }
 
     for sub_item in chapter.sub_items.iter_mut() {
@@ -513,14 +528,38 @@ fn netlistsvg_block(
 }
 
 fn combined_definitions(blocks: &[&ClashBlock]) -> String {
-    let mut definitions = String::new();
-    for block in blocks {
-        definitions.push_str(&strip_doctests(&block.code));
-        if !definitions.ends_with('\n') {
-            definitions.push('\n');
-        }
-    }
-    definitions
+    blocks
+        .iter()
+        .map(|block| strip_doctests(&block.code))
+        .map(|source| source.trim_end_matches('\n').to_string())
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+fn render_group_listing(anchor: &str, group: &str, source: &str) -> String {
+    let fence = "`".repeat(longest_run(source, '`').max(2) + 1);
+    format!(
+        "\n<a id=\"{anchor}\"></a>\n\n### Group <code>{}</code>\n\n{fence}haskell\n{source}\n{fence}\n",
+        escape_html(group)
+    )
+}
+
+fn longest_run(value: &str, needle: char) -> usize {
+    value
+        .chars()
+        .fold((0, 0), |(longest, current), character| {
+            let current = if character == needle { current + 1 } else { 0 };
+            (longest.max(current), current)
+        })
+        .0
+}
+
+fn escape_html(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }
 
 fn test_blocks(

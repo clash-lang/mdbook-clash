@@ -1,5 +1,24 @@
 # mdbook-clash example
 
+## Standalone block
+
+An ungrouped block is already a complete listing, so it contains its own module
+and imports and does not get a separate full-listing link:
+
+```haskell,clash topEntity=standaloneIncrement
+module StandaloneExample where
+
+import Clash.Prelude
+
+standaloneIncrement :: Unsigned 8 -> Unsigned 8
+standaloneIncrement value = value + 1
+
+>>> standaloneIncrement 7
+8
+```
+
+## Grouped blocks
+
 This block is simulated during `mdbook build`:
 
 ```haskell,clash group=double-example hidden
@@ -83,7 +102,7 @@ twiceAdjusted :: Unsigned 8 -> Unsigned 8
 twiceAdjusted value = addAdjustment (addAdjustment value)
 
 >>> twiceAdjusted 40
-43
+42
 ```
 
 The grouped definitions are compiled once for simulation, while the two

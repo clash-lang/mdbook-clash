@@ -74,7 +74,6 @@ targets below:
 
 ```haskell,clash group=adjusters hidden
 module Adjusters where
-
 import Clash.Prelude
 ```
 
@@ -86,6 +85,8 @@ adjustment = 1
 This block is simulated independently and synthesized as `addAdjustment`:
 
 ```haskell,clash group=adjusters topEntity=addAdjustment
+import qualified Data.List as List
+
 addAdjustment :: Unsigned 8 -> Unsigned 8
 addAdjustment value = value + adjustment
 

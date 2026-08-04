@@ -123,7 +123,7 @@ fn process_chapter(process_context: &ProcessContext, chapter: &mut Chapter) -> R
         if unit.iter().any(|block| has_doctests(&block.code)) {
             test_blocks(process_context, &chapter_path, &unit)?;
         }
-        let definitions = combined_definitions(&unit);
+        let definitions = assembled_definitions(&unit);
         let listing_link = unit[0].attrs.group.as_deref().map(|group| {
             let anchor = format!("mdbook-clash-listing-{}", listings.len() + 1);
             listings.push(render_group_listing(&anchor, group, &definitions));
@@ -527,13 +527,46 @@ fn netlistsvg_block(
     )))
 }
 
-fn combined_definitions(blocks: &[&ClashBlock]) -> String {
-    blocks
+fn assembled_definitions(blocks: &[&ClashBlock]) -> String {
+    let source = blocks
         .iter()
         .map(|block| strip_doctests(&block.code))
         .map(|source| source.trim_end_matches('\n').to_string())
         .collect::<Vec<_>>()
-        .join("\n\n")
+        .join("\n\n");
+    if blocks
+        .first()
+        .and_then(|block| block.attrs.group.as_ref())
+        .is_some()
+    {
+        hoist_imports(&source)
+    } else {
+        source
+    }
+}
+
+fn hoist_imports(source: &str) -> String {
+    let imports = source
+        .lines()
+        .filter(|line| line.starts_with("import "))
+        .collect::<Vec<_>>();
+    if imports.is_empty() {
+        return source.to_string();
+    }
+
+    let mut output = Vec::new();
+    let mut emitted_imports = false;
+    for line in source.lines() {
+        if line.starts_with("import ") {
+            if !emitted_imports {
+                output.extend(imports.iter().copied());
+                emitted_imports = true;
+            }
+        } else {
+            output.push(line);
+        }
+    }
+    output.join("\n")
 }
 
 fn render_group_listing(anchor: &str, group: &str, source: &str) -> String {
@@ -573,7 +606,7 @@ fn test_blocks(
         .copied()
         .filter(|block| has_doctests(&block.code))
         .collect::<Vec<_>>();
-    let snippet_source = combined_definitions(blocks);
+    let snippet_source = assembled_definitions(blocks);
     let snippet_module = source_module_name(&snippet_source);
     if snippet_module == "MdbookClashRunner" {
         return Err(Error::msg(format!(
@@ -1512,6 +1545,15 @@ double x = x + x
             "Example.Counter"
         );
         assert_eq!(source_module_name("value = 1\n"), "Main");
+    }
+
+    #[test]
+    fn collects_group_imports_at_the_first_import() {
+        let source = "module Example where\n\nimport Clash.Prelude\n\nfirst = 1\n\nimport Data.Proxy (Proxy(..))\n\nsecond = Proxy @Int";
+        assert_eq!(
+            hoist_imports(source),
+            "module Example where\n\nimport Clash.Prelude\nimport Data.Proxy (Proxy(..))\n\nfirst = 1\n\n\nsecond = Proxy @Int"
+        );
     }
 
     #[test]

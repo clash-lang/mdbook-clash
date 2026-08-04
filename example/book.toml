@@ -1,0 +1,10 @@
+[book]
+title = "mdbook-clash example"
+authors = ["Clash contributors"]
+src = "src"
+
+[preprocessor.clash]
+command = "cargo run --manifest-path ../Cargo.toml --"
+clash-cmd = ["clash"]
+ghc-cmd = ["ghc"]
+keep-artifacts = true

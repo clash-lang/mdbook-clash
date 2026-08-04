@@ -1,0 +1,25 @@
+[package]
+name = "mdbook-clash"
+version = "0.1.0"
+edition = "2021"
+license = "BSD-2-Clause"
+description = "An mdBook preprocessor for checked Clash examples"
+
+[dependencies]
+anyhow = "1"
+blake3 = "1"
+env_logger = "0.10"
+fs2 = "0.4"
+log = "0.4"
+mdbook-preprocessor = { version = "=0.5.2", default-features = false }
+pulldown-cmark = "0.12"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+shell-words = "1"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lib]
+name = "mdbook_clash"
+path = "src/lib.rs"

@@ -1,0 +1,9 @@
+[book]
+title = "mdbook-clash example with shockwave integration"
+authors = ["Clash contributors"]
+src = "src"
+
+[preprocessor.clash]
+command = "cargo run --manifest-path ../Cargo.toml --"
+clash-cmd = ["clash"]
+keep-artifacts = true

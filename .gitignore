@@ -4,3 +4,5 @@
 /mdbook-clash-work/
 /.dev-bin/
 /doctest-driver/dist-newstyle/
+/.direnv
+/.envrc

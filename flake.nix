@@ -14,6 +14,11 @@
       flake = false;
     };
 
+    clash-shockwaves = {
+      url = "github:clash-lang/clash-shockwaves/nix-flake";
+      inputs.clash-compiler.follows = "clash-compiler";
+    };
+
     # Use the nixpkgs revision against which the selected Clash flake was
     # tested. Overriding clash-compiler therefore also selects a compatible
     # package set used by the selected Clash release.
@@ -23,6 +28,7 @@
   outputs =
     {
       clash-compiler,
+      clash-shockwaves,
       doctest-src,
       nixpkgs,
       self,
@@ -41,11 +47,29 @@
       mdbookClashOverlay =
         final: _prev:
         let
+          pkgs = pkgsFor final.stdenv.hostPlatform.system;
+
           clashGhcVersion = clash-compiler.ghcVersion.${final.stdenv.hostPlatform.system};
           clashPackages = final."clashPackages-${clashGhcVersion}";
-          clash = clashPackages.clash-ghc;
+          clash = pkgs.stdenv.mkDerivation {
+            name = "clash-wrapped";
+
+            buildCommand = ''
+              mkdir -p $out/bin
+
+              echo '#!${pkgs.bash}/bin/bash' > $out/bin/clash
+              echo '${clashPackages.clash-ghc}/bin/clash -package-db ${ghcWithDoctest}/lib/*/lib/package.conf.d -package clash-shockwaves $@' >> $out/bin/clash
+              chmod +x $out/bin/clash
+
+              echo '#!${pkgs.bash}/bin/bash' > $out/bin/clashi
+              echo '${clashPackages.clash-ghc}/bin/clashi -package-db ${ghcWithDoctest}/lib/*/lib/package.conf.d -package clash-shockwaves $@' >> $out/bin/clashi
+              chmod +x $out/bin/clashi
+            '';
+          };
+          # clash = clashPackages.clash-ghc.ove;
+          shockwaves = clash-shockwaves.packages.${final.stdenv.hostPlatform.system}.${clashGhcVersion}.clash-shockwaves;
           doctest = final.haskell.lib.dontCheck (clashPackages.callCabal2nix "doctest" doctest-src { });
-          ghcWithDoctest = clashPackages.ghcWithPackages (_: [ doctest ]);
+          ghcWithDoctest = clashPackages.ghcWithPackages (_: [ doctest shockwaves ]);
           mdbook-clash-doctest = clashPackages.callCabal2nix "mdbook-clash-doctest" ./doctest-driver {
             inherit doctest;
           };

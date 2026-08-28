@@ -39,6 +39,36 @@ impl Processor {
             });
 
             for block in unit {
+                if let Some(shockwaves) = &block.attrs.shockwaves {
+                    // TODO: support explicit CRE signals
+                    let cycle_start = shockwaves.start;
+                    let cycle_end = shockwaves.end;
+                    let unwrapped_signals: String = shockwaves.signals.iter().map(|signal_name| format!("let {signal_name}_unwrapped__ = exposeClockResetEnable {signal_name} systemClockGen systemResetGen enableGen\n")).collect();
+                    let bundle_with_comma: String = shockwaves.signals.iter().map(|signal_name| format!("Clash.Shockwaves.traceSignal \"{signal_name}\" {signal_name}_unwrapped__, ")).collect();
+                    let bundle = bundle_with_comma.trim_end_matches(", ");
+                    let bundle_names_with_comma: String = shockwaves
+                        .signals
+                        .iter()
+                        .map(|signal_name| format!("\"{signal_name}\", "))
+                        .collect();
+                    let bundle_names = bundle_names_with_comma.trim_end_matches(", ");
+                    let haskell_suffix = format!(
+                        r#"
+main :: IO ()
+main = do
+  {unwrapped_signals}
+  vcddata <- dumpVCD ({cycle_start}, {cycle_end}) (bundle ({bundle})) [ {bundle_names} ]
+  case vcddata of
+    Left msg ->
+      error msg
+    Right (vcd, meta) ->
+      do writeFile     "waveform.vcd"  vcd
+         writeFileJSON "waveform.json" meta
+"#
+                    );
+                    log::debug!("{haskell_suffix}");
+                }
+
                 let addition = if let Some(top_entity) = block.attrs.top_entity.as_deref() {
                     let output =
                         synthesis::run(&self.config, &path, block, &definitions, top_entity)?;

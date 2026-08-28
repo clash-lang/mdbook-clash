@@ -13,10 +13,18 @@ pub(crate) struct Block {
 }
 
 #[derive(Clone, Debug, Default)]
+pub(crate) struct ShockwavesAttributes {
+    pub start: u32,
+    pub end: u32,
+    pub signals: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default)]
 pub(crate) struct Attributes {
     pub group: Option<String>,
     pub top_entity: Option<String>,
     pub yosys: Vec<String>,
+    pub shockwaves: Option<ShockwavesAttributes>,
     pub netlistsvg: bool,
     pub hidden: bool,
 }
@@ -138,6 +146,23 @@ fn attributes(info: &str) -> Result<Option<Attributes>> {
             if attrs.top_entity.replace(binding.to_string()).is_some() {
                 bail!("topEntity was specified more than once");
             }
+        } else if let Some(shockwaves) = value.strip_prefix("shockwaves=") {
+            let mut args = shockwaves
+                .split(",")
+                .map(str::trim)
+                .filter(|command| !command.is_empty())
+                .map(str::to_string);
+            let Some(start): Option<u32> = args.next().and_then(|n| n.parse().ok()) else {
+                bail!("shockwave= requires AT LEAST three arguments (more signals may be given). Example: shockwaves=startcycle,endcycle,signal1,signal2,... Currently missing startcycle")
+            };
+            let Some(end): Option<u32> = args.next().and_then(|n| n.parse().ok()) else {
+                bail!("shockwave= requires AT LEAST three arguments (more signals may be given). Example: shockwaves=startcycle,endcycle,signal1,signal2,... Currently missing endcycle")
+            };
+            let signals: Vec<String> = args.collect();
+            if signals.is_empty() {
+                bail!("shockwave= requires AT LEAST three arguments (more signals may be given). Example: shockwaves=startcycle,endcycle,signal1,signal2,... Currently missing signal")
+            }
+            attrs.shockwaves = Some(ShockwavesAttributes { start, end, signals });
         } else if let Some(commands) = value.strip_prefix("yosys=") {
             if !attrs.yosys.is_empty() {
                 bail!("yosys was specified more than once");

@@ -4,7 +4,7 @@
   inputs = {
     # Keep this as an independent input so consumers can select another Clash
     # release with `--override-input clash-compiler ...`.
-    clash-compiler.url = "github:clash-lang/clash-compiler/v1.10.0";
+    clash-compiler.url = "github:clash-lang/clash-compiler/v1.10.1";
 
     # Pin one doctest implementation across all supported Clash/GHC pairs. The
     # driver uses its internal parser and runner APIs so Markdown transcripts
@@ -32,7 +32,6 @@
       systems = [
         "aarch64-darwin"
         "aarch64-linux"
-        "x86_64-darwin"
         "x86_64-linux"
       ];
 

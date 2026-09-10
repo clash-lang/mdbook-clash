@@ -28,12 +28,53 @@ pub(crate) fn doctest(code: &str) -> Doctest<'_> {
     }
 }
 
+pub(crate) fn suffix_shockwave_main(block: &Block) -> String {
+    if let Some(shockwaves) = &block.attrs.shockwaves {
+        // TODO: support explicit CRE signals
+        let cycle_start = shockwaves.start;
+        let cycle_end = shockwaves.end;
+        let unwrapped_signals: String = shockwaves.signals.iter().map(|signal_name| format!("  let {signal_name}_unwrapped__ = exposeClockResetEnable {signal_name} systemClockGen systemResetGen enableGen\n")).collect();
+        let bundle_with_comma: String = shockwaves.signals.iter().map(|signal_name| format!("Clash.Shockwaves.traceSignal \"{signal_name}\" {signal_name}_unwrapped__, ")).collect();
+        let bundle = bundle_with_comma.trim_end_matches(", ");
+        let bundle_names_with_comma: String = shockwaves
+            .signals
+            .iter()
+            .map(|signal_name| format!("\"{signal_name}\", "))
+            .collect();
+        let bundle_names = bundle_names_with_comma.trim_end_matches(", ");
+        format!(
+            r#"
+main :: IO ()
+main = do
+{unwrapped_signals}
+  vcddata <- dumpVCD ({cycle_start}, {cycle_end}) (bundle ({bundle})) [ {bundle_names} ]
+  case vcddata of
+    Left msg -> error msg
+    Right (vcd, meta) -> do
+      writeFile     "waveform.vcd"  vcd
+      writeFileJSON "waveform.json" meta
+"#
+        )
+    } else {
+        String::new()
+    }
+}
+
 pub(crate) fn assemble(blocks: &[&Block]) -> String {
-    blocks
+    let mut definitions = blocks
         .iter()
         .map(|block| doctest(&block.code).definitions)
         .collect::<Vec<_>>()
-        .join("\n\n")
+        .join("\n\n");
+    let shockwave_block =blocks
+        .iter()
+        .find(|block| block.attrs.shockwaves.is_some())
+        .map(|block| suffix_shockwave_main(block))
+        .unwrap_or(String::new());
+    definitions.push_str("\n\n");
+    definitions.push_str(&shockwave_block);
+    definitions.push_str("\n\n");
+    definitions
 }
 
 pub(crate) fn module_name(source: &str) -> String {

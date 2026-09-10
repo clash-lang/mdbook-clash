@@ -17,6 +17,7 @@ pub(crate) struct ShockwavesAttributes {
     pub start: u32,
     pub end: u32,
     pub signals: Vec<String>,
+    pub resolution: (u32, u32),
 }
 
 #[derive(Clone, Debug, Default)]
@@ -162,7 +163,8 @@ fn attributes(info: &str) -> Result<Option<Attributes>> {
             if signals.is_empty() {
                 bail!("shockwave= requires AT LEAST three arguments (more signals may be given). Example: shockwaves=startcycle,endcycle,signal1,signal2,... Currently missing signal")
             }
-            attrs.shockwaves = Some(ShockwavesAttributes { start, end, signals });
+            let resolution = (800, 200);
+            attrs.shockwaves = Some(ShockwavesAttributes { start, end, signals, resolution });
         } else if let Some(commands) = value.strip_prefix("yosys=") {
             if !attrs.yosys.is_empty() {
                 bail!("yosys was specified more than once");

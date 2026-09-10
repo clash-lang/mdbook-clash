@@ -7,6 +7,7 @@ mod netlist;
 mod processor;
 mod source;
 mod synthesis;
+mod shockwaves;
 
 use anyhow::Result;
 use config::Config;

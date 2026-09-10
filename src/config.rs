@@ -16,6 +16,7 @@ pub(crate) struct Config {
     pub cache_key: String,
     pub clash_cmd: Vec<String>,
     pub clash_args: Vec<String>,
+    pub surfer_cmd: Vec<String>,
     pub doctest_cmd: Vec<String>,
     pub yosys_cmd: Vec<String>,
     pub netlistsvg_cmd: Vec<String>,
@@ -44,6 +45,7 @@ impl Config {
         }
 
         let clash_cmd = command(ctx, "clash-cmd", "clash")?;
+        let surfer_cmd = command(ctx, "surfer-cmd", "surfer")?;
         let yosys_cmd = command(ctx, "yosys-cmd", "yosys")?;
         let netlistsvg_cmd = command(ctx, "netlistsvg-cmd", "netlistsvg")?;
         if doctest_cmd.is_empty() {
@@ -85,6 +87,7 @@ impl Config {
                 .unwrap_or_default(),
             doctest_cmd,
             yosys_cmd,
+            surfer_cmd,
             netlistsvg_cmd,
         })
     }

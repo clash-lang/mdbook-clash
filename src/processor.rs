@@ -1,5 +1,5 @@
 use crate::config::Config;
-use crate::{doctest, markdown, netlist, source, synthesis};
+use crate::{doctest, markdown, netlist, shockwaves, source, synthesis};
 use anyhow::Result;
 use mdbook_preprocessor::book::{Book, BookItem, Chapter};
 use std::path::Path;
@@ -61,6 +61,12 @@ impl Processor {
                     if !replacement.is_empty() {
                         edits.push((block.end, block.end, replacement));
                     }
+                }
+
+                if let Some(shockwaves) = &block.attrs.shockwaves {
+                    let output = shockwaves::run(&self.config, &path, block, shockwaves, &definitions)?;
+                    let rendered_md = shockwaves::markdown(&self.config, &output);
+                    edits.push((block.end, block.end, rendered_md));
                 }
             }
         }

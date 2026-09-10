@@ -12,7 +12,7 @@ pub(crate) struct Block {
     pub end: usize,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize)]
 pub(crate) struct ShockwavesAttributes {
     pub start: u32,
     pub end: u32,

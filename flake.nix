@@ -6,6 +6,10 @@
     # release with `--override-input clash-compiler ...`.
     clash-compiler.url = "github:clash-lang/clash-compiler/v1.10.0";
 
+    # Custom surfer package with the command-mode
+    # We do not make this follow clash' nixpkgs, as it requires a newer version of rustc
+    surfer.url = "gitlab:jaschutte1/surfer/command-mode";
+
     # Pin one doctest implementation across all supported Clash/GHC pairs. The
     # driver uses its internal parser and runner APIs so Markdown transcripts
     # have the same behavior on every CI lane.
@@ -29,6 +33,7 @@
     {
       clash-compiler,
       clash-shockwaves,
+      surfer,
       doctest-src,
       nixpkgs,
       self,
@@ -173,6 +178,7 @@
               pkgs.yosys
               clash
               ghcWithDoctest
+              surfer.packages.${system}.default
             ];
 
             shellHook = ''

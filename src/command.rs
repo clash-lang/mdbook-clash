@@ -19,6 +19,22 @@ pub(crate) fn run(command: &[String], args: &[String]) -> std::io::Result<Output
     Command::new(program).args(prefix).args(args).output()
 }
 
+pub(crate) fn run_in_dir(command: &[String], args: &[String], working_directory: PathBuf) -> std::io::Result<Output> {
+    let (program, prefix) = command
+        .split_first()
+        .expect("commands are validated when configuration is loaded");
+    Command::new(program).args(prefix).args(args).current_dir(working_directory).output()
+}
+
+pub(crate) fn run_and_display(command: &[String], args: &[String], dir: Option<PathBuf>) -> std::io::Result<Output> {
+    let display = display(command, args);
+    log::info!("running {display}");
+    match dir {
+        Some(dir) => run_in_dir(command, args, dir),
+        None => run(command, args),
+    }
+}
+
 pub(crate) fn check(output: Output, action: &str, location: &str) -> Result<()> {
     if output.status.success() {
         return Ok(());

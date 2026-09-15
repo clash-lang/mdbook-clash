@@ -53,14 +53,22 @@ nix flake lock \
   --override-input clash-compiler github:clash-lang/clash-compiler/v1.8.5
 ```
 
-The `nixpkgs` input follows `clash-compiler/nixpkgs`, keeping the development
-shell aligned with the selected Clash release. Downstream flakes can make the
-same choice declaratively and have this flake follow it:
+The `nixpkgs` input tracks `nixpkgs-unstable`, and `clash-compiler/nixpkgs`
+follows it. Build tools and Clash therefore share one package set. The `systems`
+input also keeps older Clash flakes on the supported Linux and Apple Silicon
+macOS platforms.
+
+When supplying their own Clash input, downstream flakes should configure it to
+follow the same `nixpkgs` and `systems` inputs:
 
 ```nix
 inputs.clash-compiler.url = "github:clash-lang/clash-compiler/v1.8.5";
+inputs.clash-compiler.inputs.nixpkgs.follows = "nixpkgs";
+inputs.clash-compiler.inputs.flake-utils.inputs.systems.follows = "mdbook-clash/systems";
+inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
 inputs.mdbook-clash.url = "path:../mdbook-clash";
 inputs.mdbook-clash.inputs.clash-compiler.follows = "clash-compiler";
+inputs.mdbook-clash.inputs.nixpkgs.follows = "nixpkgs";
 ```
 
 For further composition, `overlays.default` and

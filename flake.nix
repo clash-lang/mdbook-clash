@@ -5,6 +5,15 @@
     # Keep this as an independent input so consumers can select another Clash
     # release with `--override-input clash-compiler ...`.
     clash-compiler.url = "github:clash-lang/clash-compiler/v1.10.1";
+    clash-compiler.inputs.nixpkgs.follows = "nixpkgs";
+    clash-compiler.inputs.flake-utils.inputs.systems.follows = "systems";
+
+    # Older Clash releases use flake-utils' default list, which includes
+    # x86_64-darwin, a platform no longer supported by nixpkgs-unstable.
+    systems = {
+      url = "path:./nix/systems";
+      flake = false;
+    };
 
     # Pin one doctest implementation across all supported Clash/GHC pairs. The
     # driver uses its internal parser and runner APIs so Markdown transcripts
@@ -14,10 +23,8 @@
       flake = false;
     };
 
-    # Use the nixpkgs revision against which the selected Clash flake was
-    # tested. Overriding clash-compiler therefore also selects a compatible
-    # package set used by the selected Clash release.
-    nixpkgs.follows = "clash-compiler/nixpkgs";
+    # Share one package set between the build tools and the selected Clash release.
+    nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
   };
 
   outputs =
@@ -26,16 +33,11 @@
       doctest-src,
       nixpkgs,
       self,
+      systems,
       ...
     }:
     let
-      systems = [
-        "aarch64-darwin"
-        "aarch64-linux"
-        "x86_64-linux"
-      ];
-
-      forAllSystems = nixpkgs.lib.genAttrs systems;
+      forAllSystems = nixpkgs.lib.genAttrs (import systems);
 
       mdbookClashOverlay =
         final: _prev:

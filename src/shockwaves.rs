@@ -48,6 +48,14 @@ pub(crate) fn run(
     shockwaves: &ShockwavesAttributes,
     source_text: &str,
 ) -> Result<Output> {
+    // Check if the shockwaves library is installed in the mdbook directory, if it is not then error
+    // By enforcing that the wasm version is in the project root, we prevent cases where individual
+    // people have different libraries installed
+    if let Err(e) = std::fs::read(".surfer/translators/surfer_shockwaves.wasm") {
+        let e: anyhow::Error = e.into();
+        return Err(e.context("Could not read surfer_shockwaves.wasm library file, is it installed?"))
+    }
+
     let cache_key = cache::key(
         config,
         "shockwaves",
@@ -110,8 +118,9 @@ pub(crate) fn run(
     let surfer_args = vec![
         "-C".to_string(),
         format!(
-            "load_file {}; scope_add logic; zoom_fit; save_image {}x{} {}",
+            "load_file {}; scope_add logic; set_time_unit none; zoom_to -1 {}; save_image {}x{} {}",
             shockwaves_vcd.display().to_string(),
+            shockwaves.end - shockwaves.start - 1,
             shockwaves.resolution.0,
             shockwaves.resolution.1,
             output_image.display().to_string()

@@ -19,7 +19,7 @@
     };
 
     clash-shockwaves = {
-      url = "github:clash-lang/clash-shockwaves/nix-flake";
+      url = "github:clash-lang/clash-shockwaves/nix-translator-build";
       inputs.clash-compiler.follows = "clash-compiler";
     };
 
@@ -144,7 +144,7 @@
         {
           default = pkgs.mdbook-clash;
           inherit (pkgs) mdbook-clash mdbook-clash-doctest;
-        }
+        } // clash-shockwaves.packages.${system}
       );
 
       apps = forAllSystems (system: {
@@ -187,6 +187,12 @@
               echo "Build: cargo build"
               echo "Build doctest driver: build-doctest"
               echo "Example: mdbook build example"
+              echo ""
+
+              echo "Installed Surfer translator in $PWD/.surfer/translators"
+              echo "Copy this installation folder ('.surfer/translators') to the root of your mdbook to properly install clash-shockwaves"
+              ln -s ${clash-shockwaves.packages.${system}.surfer-shockwaves}/lib .surfer/translators
+              echo ""
             '';
           };
         }

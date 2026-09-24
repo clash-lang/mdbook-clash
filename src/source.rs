@@ -47,12 +47,12 @@ pub(crate) fn suffix_shockwave_main(block: &Block) -> String {
 main :: IO ()
 main = do
 {unwrapped_signals}
-  vcddata <- dumpVCD ({cycle_start}, {cycle_end}) (bundle ({bundle})) [ {bundle_names} ]
+  vcddata <- Clash.Shockwaves.dumpVCD ({cycle_start}, {cycle_end}) (bundle ({bundle})) [ {bundle_names} ]
   case vcddata of
     Left msg -> error msg
     Right (vcd, meta) -> do
-      writeFile     "waveform.vcd"  vcd
-      writeFileJSON "waveform.json" meta
+      Data.Text.IO.writeFile         "waveform.vcd"  vcd
+      Clash.Shockwaves.writeFileJSON "waveform.json" meta
 "#
         )
     } else {

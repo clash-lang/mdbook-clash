@@ -7,9 +7,9 @@ Below I added the imports and module decleration, which you cannot see :)
 ```haskell,clash group=shocking hidden
 module Reproducer where
 
-import Clash.Prelude hiding(writeFile, dumpVCD, traceSignal)
-import Clash.Shockwaves
-import Data.Text.IO  (writeFile)
+import Clash.Prelude
+import qualified Clash.Shockwaves
+import qualified Data.Text.IO
 ```
 
 Now for the actual code, here it is!

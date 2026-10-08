@@ -28,6 +28,14 @@ decrementing = register 0 (register 0 (decrementing - 1))
 I wonder how this looks like in an image though... Hmmm..
 Oh hey look at that!
 
-```haskell,clash group=shocking shockwaves=0,10,incrementing,decrementing,constant_signal hidden
-```
+<surfer>
+    group = shocking
+    cycle_start = 0
+    cycle_end = 10
+    width = 800
+    height = 600
+    signals = incrementing, decrementing, constant_signal
+    surfer_batch = hi,hallo,good bye
+</surfer>
+
 

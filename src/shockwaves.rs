@@ -13,16 +13,14 @@ pub(crate) struct OutputImage {
     pub resolution: (u32, u32),
 }
 
-impl Default for OutputImage {
-    fn default() -> Self {
+impl OutputImage {
+    pub fn new(width: u32, height: u32) -> Self {
         Self {
             file_path: "images/render.png".to_string(),
-            resolution: (800, 200),
+            resolution: (width, height),
         }
     }
-}
 
-impl OutputImage {
     pub fn markdown(&self, config: &Config, cache_key: &str) -> String {
         let directory = cache::directory(config, "shockwaves", cache_key);
         let image_path = directory.join(&self.file_path);
@@ -45,7 +43,6 @@ pub(crate) fn run(
     config: &Config,
     chapter: &Path,
     block: &Block,
-    surfer_args: &[String],
     source_text: &str,
 ) -> Result<Output> {
     // Check if the shockwaves library is installed in the mdbook directory, if it is not then error
@@ -92,7 +89,7 @@ pub(crate) fn run(
         );
         return Ok(Output {
             cache_key,
-            images: vec![OutputImage::default()],
+            images: vec![OutputImage::new(shockwaves.width, shockwaves.height)],
         });
     }
     cache::reset(&directory)?;
@@ -127,7 +124,7 @@ pub(crate) fn run(
             "load_file {}; scope_add logic; set_time_unit none; zoom_to -1 {}; {}; save_image {}x{} {}",
             shockwaves_vcd.display().to_string(),
             shockwaves.cycle_end - shockwaves.cycle_start - 1,
-            surfer_args.join(";"),
+            shockwaves.surfer_batch.join(";"),
             shockwaves.width,
             shockwaves.height,
             output_image.display().to_string()
@@ -142,7 +139,7 @@ pub(crate) fn run(
     cache::commit(config, &directory, "shockwaves", &cache_key)?;
     Ok(Output {
         cache_key,
-        images: vec![OutputImage::default()],
+        images: vec![OutputImage::new(shockwaves.width, shockwaves.height)],
     })
 }
 

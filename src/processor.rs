@@ -40,42 +40,53 @@ impl Processor {
             });
 
             for block in unit {
-                let BlockKind::Code(code_block) = &block.kind else { continue; };
-
-                let addition = if let Some(top_entity) = code_block.attrs.top_entity.as_deref() {
-                    let output =
-                        synthesis::run(&self.config, &path, block, &definitions, top_entity)?;
-                    if code_block.attrs.netlistsvg {
-                        netlist::run(&self.config, &path, block, &output)?
-                    } else {
-                        String::new()
+                match &block.kind {
+                    BlockKind::Code(code_block) => {
+                        let addition =
+                            if let Some(top_entity) = code_block.attrs.top_entity.as_deref() {
+                                let output = synthesis::run(
+                                    &self.config,
+                                    &path,
+                                    block,
+                                    &definitions,
+                                    top_entity,
+                                )?;
+                                if code_block.attrs.netlistsvg {
+                                    netlist::run(&self.config, &path, block, &output)?
+                                } else {
+                                    String::new()
+                                }
+                            } else {
+                                String::new()
+                            };
+                        if code_block.attrs.hidden {
+                            edits.push((block.start, block.end, addition));
+                        } else {
+                            let replacement = format!(
+                                "{}{}",
+                                listing_link.as_deref().unwrap_or_default(),
+                                addition
+                            );
+                            if !replacement.is_empty() {
+                                edits.push((block.end, block.end, replacement));
+                            }
+                        }
                     }
-                } else {
-                    String::new()
-                };
-                if code_block.attrs.hidden {
-                    edits.push((block.start, block.end, addition));
-                } else {
-                    let replacement = format!(
-                        "{}{}",
-                        listing_link.as_deref().unwrap_or_default(),
-                        addition
-                    );
-                    if !replacement.is_empty() {
-                        edits.push((block.end, block.end, replacement));
-                    }
+                    BlockKind::Surfer(surfer_block) => {
+                        dbg!((block.start, block.end, String::new()));
+                        let output = shockwaves::run(
+                            &self.config,
+                            &path,
+                            block,
+                            &definitions,
+                        )?;
+                        let rendered_md = shockwaves::markdown(&self.config, &output);
+                        edits.push((block.start, block.end, rendered_md))
+                    },
                 }
+
                 // if let Some(shockwaves) = &code_block.attrs.shockwaves {
                 //     dbg!(&code_block.attrs.surfer_batch);
-                //     let output = shockwaves::run(
-                //         &self.config,
-                //         &path,
-                //         block,
-                //         shockwaves,
-                //         &block.attrs.surfer_batch,
-                //         &definitions,
-                //     )?;
-                //     let rendered_md = shockwaves::markdown(&self.config, &output);
                 //     edits.push((block.end, block.end, rendered_md));
                 // }
             }

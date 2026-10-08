@@ -1,23 +1,58 @@
 use anyhow::{anyhow, bail, Context, Result};
 use pulldown_cmark::{CodeBlockKind, Event, Parser, Tag, TagEnd};
+use serde::Serialize;
 use std::collections::HashMap;
 
 #[derive(Clone, Debug)]
-pub(crate) struct Block {
+pub(crate) struct CodeBlock {
     pub attrs: Attributes,
     pub code: String,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum BlockKind {
+    Code(CodeBlock),
+    Surfer(SurferBlock),
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct Block {
+    pub kind: BlockKind,
     pub index: usize,
     pub line: usize,
     pub start: usize,
     pub end: usize,
 }
 
-#[derive(Clone, Debug, Default, serde::Serialize)]
-pub(crate) struct ShockwavesAttributes {
-    pub start: u32,
-    pub end: u32,
-    pub signals: Vec<String>,
-    pub resolution: (u32, u32),
+pub(crate) trait HasGroup {
+    fn get_group(&self) -> Option<&str>;
+}
+
+impl HasGroup for CodeBlock {
+    fn get_group(&self) -> Option<&str> {
+        self.attrs.group.as_deref()
+    }
+}
+
+impl HasGroup for SurferBlock {
+    fn get_group(&self) -> Option<&str> {
+        Some(self.group.as_str())
+    }
+}
+
+impl HasGroup for BlockKind {
+    fn get_group(&self) -> Option<&str> {
+        match self {
+            BlockKind::Code(code_block) => code_block.get_group(),
+            BlockKind::Surfer(surfer_block) => surfer_block.get_group(),
+        }
+    }
+}
+
+impl HasGroup for Block {
+    fn get_group(&self) -> Option<&str> {
+        self.kind.get_group()
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -25,17 +60,17 @@ pub(crate) struct Attributes {
     pub group: Option<String>,
     pub top_entity: Option<String>,
     pub yosys: Vec<String>,
-    pub shockwaves: Option<ShockwavesAttributes>,
-    pub surfer_batch: Vec<String>,
     pub netlistsvg: bool,
     pub hidden: bool,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize)]
 pub(crate) struct SurferBlock {
     pub group: String,
     pub cycle_start: u32,
     pub cycle_end: u32,
+    pub width: u32,
+    pub height: u32,
     pub signals: Vec<String>,
     pub surfer_batch: Vec<String>,
 }
@@ -45,6 +80,8 @@ pub(crate) struct SurferBlockBuilder {
     pub group: Option<String>,
     pub cycle_start: Option<u32>,
     pub cycle_end: Option<u32>,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
     pub signals: Vec<String>,
     pub surfer_batch: Vec<String>,
 }
@@ -69,6 +106,16 @@ impl SurferBlockBuilder {
         self
     }
 
+    fn with_width(mut self, width: u32) -> Self {
+        self.width = Some(width);
+        self
+    }
+
+    fn with_height(mut self, height: u32) -> Self {
+        self.height = Some(height);
+        self
+    }
+
     fn with_signals(mut self, signals: Vec<String>) -> Self {
         self.signals = signals;
         self
@@ -81,19 +128,23 @@ impl SurferBlockBuilder {
 }
 
 impl TryFrom<SurferBlockBuilder> for SurferBlock {
-    type Error = &'static str;
+    type Error = anyhow::Error;
 
     fn try_from(mut value: SurferBlockBuilder) -> std::prelude::v1::Result<Self, Self::Error> {
         let Some(group) = value.group.take() else {
-            return Err("No group specified, do not know what code group to grab signals from");
+            bail!("No group specified, do not know what code group to grab signals from");
+        };
+        let Some(width) = value.width.take() else {
+            bail!("No width specified, do not know what resolution to generate the image at");
+        };
+        let Some(height) = value.height.take() else {
+            bail!("No height specified, do not know what resolution to generate the image at",);
         };
         let Some(cycle_start) = value.cycle_start.take() else {
-            return Err(
-                "No cycle_start specified, do not know which cycle to start the simulation from",
-            );
+            bail!("No cycle_start specified, do not know which cycle to start the simulation from",);
         };
         let Some(cycle_end) = value.cycle_end.take() else {
-            return Err("No cycle_end, do not know which cycle to end the simulation");
+            bail!("No cycle_end, do not know which cycle to end the simulation");
         };
         if value.signals.is_empty() {
             log::warn!(target: "surfer-integration", "No signals specified to monitor, an empty image will be generated")
@@ -102,6 +153,8 @@ impl TryFrom<SurferBlockBuilder> for SurferBlock {
             group,
             cycle_start,
             cycle_end,
+            width,
+            height,
             signals: value.signals,
             surfer_batch: value.surfer_batch,
         })
@@ -112,7 +165,8 @@ pub(crate) fn blocks(content: &str, source: &str) -> Result<Vec<Block>> {
     let mut blocks = Vec::new();
     let mut active: Option<(String, usize, String)> = None;
 
-    let mut surfer_integration = None;
+    let mut surfer_integration = SurferBlockParser::None;
+    let mut surfer_start: Option<usize> = None;
 
     for (event, range) in Parser::new(content).into_offset_iter() {
         match event {
@@ -120,7 +174,7 @@ pub(crate) fn blocks(content: &str, source: &str) -> Result<Vec<Block>> {
             // So we need some internal state to keep track if we are inside of a <surfer> block or
             // not
             Event::Html(raw) => {
-                let html = raw.trim();
+                let html_tag = raw.trim();
                 // This does not handle nested <surfer> HTML tags, but just do not do that. Simple-as
                 enum SurferHtmlState<'a> {
                     BeginBlock,
@@ -128,91 +182,55 @@ pub(crate) fn blocks(content: &str, source: &str) -> Result<Vec<Block>> {
                     EndBlock,
                 }
 
-                let state = match html {
+                let html_state = match html_tag {
                     "<surfer>" => SurferHtmlState::BeginBlock,
                     "</surfer>" => SurferHtmlState::EndBlock,
                     s @ _ => SurferHtmlState::Item(s),
                 };
 
-                match state {
+                let current_state = match html_state {
                     SurferHtmlState::BeginBlock => {
-                        surfer_integration = Some(SurferBlockBuilder::new());
+                        surfer_start = Some(range.start);
+                        Ok(SurferBlockParser::Builder(SurferBlockBuilder::new()))
                     }
-                    SurferHtmlState::Item(raw_item) => {
-                        surfer_integration = surfer_integration.map(|builder| {
-                            enum SurferBlockProperty {
-                                Group(String),
-                                CycleEnd(u32),
-                                CycleStart(u32),
-                                Signals(Vec<String>),
-                                Batch(Vec<String>),
-                            }
+                    SurferHtmlState::Item(item) => surfer_block(item, surfer_integration),
+                    SurferHtmlState::EndBlock => match surfer_integration {
+                        SurferBlockParser::None => {
+                            Err(anyhow!("</surfer> tag found, but no starting <surfer> tag"))
+                        }
+                        SurferBlockParser::Builder(surfer_block_builder) => {
+                            Ok(SurferBlockParser::Final(surfer_block_builder.try_into()?))
+                        }
+                        SurferBlockParser::Final(_) => Err(anyhow!(
+                            "Double </surfer> tags found with no matching <surfer> tag"
+                        )),
+                    },
+                };
 
-                            let property = match raw_item.split_once("=").map(|(a,b)| (a.trim(), b.trim())) {
-                                Some(("group", value)) => {
-                                    SurferBlockProperty::Group(value.trim().to_string())
-                                }
-                                Some(("cycle_start", value)) => {
-                                    let n = match value.parse() {
-                                        Ok(n) => n,
-                                        Err(err) => {
-                                            log::error!(target: "surfer-integration", "cycle_start property is not a u32: {err}");
-                                            panic!("cycle_start property is not a u32: {err}");
-                                        }
-                                    };
-                                    SurferBlockProperty::CycleStart(n)
-                                }
-                                Some(("cycle_end", value)) => {
-                                    let n = match value.parse() {
-                                        Ok(n) => n,
-                                        Err(err) => {
-                                            log::error!(target: "surfer-integration", "cycle_end property is not a u32: {err}");
-                                            panic!("cycle_end property is not a u32: {err}");
-                                        }
-                                    };
-                                    SurferBlockProperty::CycleEnd(n)
-                                }
-                                Some(("signals", value)) => SurferBlockProperty::Signals(
-                                    value.split(",").map(|s| s.trim().to_string()).collect(),
-                                ),
-                                Some(("surfer_batch", value)) => SurferBlockProperty::Batch(
-                                    value.split(",").map(|s| s.trim().to_string()).collect(),
-                                ),
-                                Some((key, value)) => {
-                                    log::error!(target: "surfer-integration", "Unrecognized property '{key}' in <surfer> block (value: {value})");
-                                    panic!("Unrecognized property '{key}' in <surfer> block (value: {value})");
-                                },
-                                _ => {
-                                    log::error!(target: "surfer-integration", "Non-property being set in <surfer> block");
-                                    panic!("Non-property being set in <surfer> block");
-                                }
-                            };
+                let line = content[..range.end.min(content.len())]
+                    .bytes()
+                    .filter(|byte| *byte == b'\n')
+                    .count();
 
-                            match property {
-                                SurferBlockProperty::Group(group) => builder.with_group(group),
-                                SurferBlockProperty::CycleEnd(end) => builder.with_cycle_end(end),
-                                SurferBlockProperty::CycleStart(start) => {
-                                    builder.with_cycle_start(start)
-                                }
-                                SurferBlockProperty::Signals(items) => builder.with_signals(items),
-                                SurferBlockProperty::Batch(items) => builder.with_surfer_batch(items),
-                            }
-                        });
-                    }
-                    SurferHtmlState::EndBlock => {
-                        let surfer: SurferBlock = match surfer_integration
-                            .take()
-                            .ok_or("</surfer> tag found, but no starting <surfer> tag")
-                            .and_then(|builder| builder.try_into())
-                        {
-                            Ok(f) => f,
-                            Err(e) => {
-                                log::error!(target: "surfer-integration", "{e}");
-                                panic!("{e}");
-                            }
-                        };
-                        dbg!(surfer);
-                    }
+                surfer_integration = current_state.map_err(|e| {
+                    e.context(format!(
+                        "at {source}:{line}:1",
+                    ))
+                })?;
+
+                if let SurferBlockParser::Final(surfer_block) = surfer_integration {
+                    let Some(start) = surfer_start else {
+                        bail!("Got into the situation where final tag is encountered without a starting surfer tag, earlier safeguards apparently failed, report this as a bug please :)")
+                    };
+
+                    blocks.push(Block {
+                        kind: BlockKind::Surfer(surfer_block),
+                        index: blocks.len() + 1,
+                        line: line,
+                        start: start,
+                        end: range.end,
+                    });
+                    surfer_integration = SurferBlockParser::None;
                 }
             }
             Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(info))) => {
@@ -250,8 +268,7 @@ pub(crate) fn blocks(content: &str, source: &str) -> Result<Vec<Block>> {
                 }
 
                 blocks.push(Block {
-                    attrs,
-                    code,
+                    kind: BlockKind::Code(CodeBlock { attrs, code }),
                     index: blocks.len() + 1,
                     line,
                     start,
@@ -269,7 +286,7 @@ pub(crate) fn units(blocks: &[Block]) -> Vec<Vec<&Block>> {
     let mut units = Vec::<Vec<&Block>>::new();
     let mut groups = HashMap::<&str, usize>::new();
     for block in blocks {
-        if let Some(group) = block.attrs.group.as_deref() {
+        if let Some(group) = block.get_group() {
             let index = *groups.entry(group).or_insert_with(|| {
                 units.push(Vec::new());
                 units.len() - 1
@@ -280,6 +297,98 @@ pub(crate) fn units(blocks: &[Block]) -> Vec<Vec<&Block>> {
         }
     }
     units
+}
+
+#[derive(Debug)]
+enum SurferBlockParser {
+    None,
+    Builder(SurferBlockBuilder),
+    Final(SurferBlock),
+}
+
+impl SurferBlockParser {
+    fn map_builder<F>(self, mapper: F) -> anyhow::Result<Self>
+    where
+        F: FnOnce(SurferBlockBuilder) -> anyhow::Result<SurferBlockBuilder>,
+    {
+        match self {
+            SurferBlockParser::None => Ok(self),
+            SurferBlockParser::Builder(surfer_block_builder) => {
+                Ok(Self::Builder(mapper(surfer_block_builder)?))
+            }
+            SurferBlockParser::Final(_) => Ok(self),
+        }
+    }
+}
+
+fn surfer_block(
+    item: &str,
+    surfer_integration: SurferBlockParser,
+) -> anyhow::Result<SurferBlockParser> {
+    surfer_integration.map_builder(|builder| {
+        enum SurferBlockProperty {
+            Group(String),
+            CycleEnd(u32),
+            CycleStart(u32),
+            Width(u32),
+            Height(u32),
+            Signals(Vec<String>),
+            Batch(Vec<String>),
+        }
+
+        macro_rules! parse_u32 {
+            ($prop:literal, $value:expr) => {
+                match $value.parse() {
+                    Ok(n) => n,
+                    Err(err) => {
+                        bail!(concat!($prop, " property is not a u32: {}"), err);
+                    }
+                }
+            };
+        }
+
+        let property = match item.split_once("=").map(|(a,b)| (a.trim(), b.trim())) {
+            Some(("group", value)) => {
+                SurferBlockProperty::Group(value.trim().to_string())
+            }
+            Some(("cycle_start", value)) => {
+                SurferBlockProperty::CycleStart(parse_u32!("cycle_start", value))
+            }
+            Some(("cycle_end", value)) => {
+                SurferBlockProperty::CycleEnd(parse_u32!("cycle_end", value))
+            }
+            Some(("width", value)) => {
+                SurferBlockProperty::Width(parse_u32!("width", value))
+            }
+            Some(("height", value)) => {
+                SurferBlockProperty::Height(parse_u32!("height", value))
+            }
+            Some(("signals", value)) => SurferBlockProperty::Signals(
+                value.split(",").map(|s| s.trim().to_string()).collect(),
+            ),
+            Some(("surfer_batch", value)) => SurferBlockProperty::Batch(
+                value.split(",").map(|s| s.trim().to_string()).collect(),
+            ),
+            Some((key, value)) => {
+                bail!("Unrecognized property '{key}' in <surfer> block (value: {value})");
+            },
+            _ => {
+                bail!("Non-property being set in <surfer> block");
+            }
+        };
+
+        Ok(match property {
+            SurferBlockProperty::Group(group) => builder.with_group(group),
+            SurferBlockProperty::CycleEnd(end) => builder.with_cycle_end(end),
+            SurferBlockProperty::CycleStart(start) => {
+                builder.with_cycle_start(start)
+            }
+            SurferBlockProperty::Width(n) => builder.with_width(n),
+            SurferBlockProperty::Height(n) => builder.with_height(n),
+            SurferBlockProperty::Signals(items) => builder.with_signals(items),
+            SurferBlockProperty::Batch(items) => builder.with_surfer_batch(items),
+        })
+            })
 }
 
 fn attributes(info: &str) -> Result<Option<Attributes>> {
@@ -369,7 +478,14 @@ double x = x + x
 adder x y = x + y
 ~~~
 "#;
-        let blocks = blocks(content, "chapter.md").unwrap();
+        let blocks: Vec<CodeBlock> = blocks(content, "chapter.md")
+            .unwrap()
+            .into_iter()
+            .map(|block| match block.kind {
+                BlockKind::Code(code_block) => code_block,
+                BlockKind::Surfer(_surfer_block) => panic!("Not a code block!"),
+            })
+            .collect();
         assert_eq!(blocks.len(), 2);
         assert_eq!(blocks[0].attrs.top_entity, None);
         assert_eq!(blocks[1].attrs.top_entity.as_deref(), Some("adder"));

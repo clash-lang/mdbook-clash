@@ -1,4 +1,4 @@
-use crate::markdown::Block;
+use crate::markdown::{Block, BlockKind, CodeBlock};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug)]
@@ -28,13 +28,21 @@ pub(crate) fn doctest(code: &str) -> Doctest<'_> {
     }
 }
 
-pub(crate) fn suffix_shockwave_main(block: &Block) -> String {
-    if let Some(shockwaves) = &block.attrs.shockwaves {
+pub(crate) fn suffix_shockwave_main(block: &Block) -> Option<String> {
+    if let BlockKind::Surfer(shockwaves) = &block.kind {
         // TODO: support explicit CRE signals
-        let cycle_start = shockwaves.start;
-        let cycle_end = shockwaves.end;
+        let cycle_start = shockwaves.cycle_start;
+        let cycle_end = shockwaves.cycle_end;
         let unwrapped_signals: String = shockwaves.signals.iter().map(|signal_name| format!("  let {signal_name}_unwrapped__ = exposeClockResetEnable {signal_name} systemClockGen systemResetGen enableGen\n")).collect();
-        let bundle_with_comma: String = shockwaves.signals.iter().map(|signal_name| format!("Clash.Shockwaves.traceSignal \"{signal_name}\" {signal_name}_unwrapped__, ")).collect();
+        let bundle_with_comma: String = shockwaves
+            .signals
+            .iter()
+            .map(|signal_name| {
+                format!(
+                    "Clash.Shockwaves.traceSignal \"{signal_name}\" {signal_name}_unwrapped__, "
+                )
+            })
+            .collect();
         let bundle = bundle_with_comma.trim_end_matches(", ");
         let bundle_names_with_comma: String = shockwaves
             .signals
@@ -42,7 +50,7 @@ pub(crate) fn suffix_shockwave_main(block: &Block) -> String {
             .map(|signal_name| format!("\"{signal_name}\", "))
             .collect();
         let bundle_names = bundle_names_with_comma.trim_end_matches(", ");
-        format!(
+        Some(format!(
             r#"
 main :: IO ()
 main = do
@@ -54,26 +62,28 @@ main = do
       Data.Text.IO.writeFile         "waveform.vcd"  vcd
       Clash.Shockwaves.writeFileJSON "waveform.json" meta
 "#
-        )
+        ))
     } else {
-        String::new()
+        None
     }
 }
 
 pub(crate) fn assemble(blocks: &[&Block]) -> String {
     let mut definitions = blocks
         .iter()
+        .filter_map(|block| match &block.kind {
+            BlockKind::Code(code_block) => Some(code_block),
+            BlockKind::Surfer(_) => None,
+        })
         .map(|block| doctest(&block.code).definitions)
         .collect::<Vec<_>>()
         .join("\n\n");
-    let shockwave_block =blocks
+    let shockwave_blocks = blocks
         .iter()
-        .find(|block| block.attrs.shockwaves.is_some())
-        .map(|block| suffix_shockwave_main(block))
-        .unwrap_or(String::new());
-    definitions.push_str("\n\n");
-    definitions.push_str(&shockwave_block);
-    definitions.push_str("\n\n");
+        .filter_map(|block| suffix_shockwave_main(block))
+        .collect::<Vec<String>>()
+        .join("\n\n");
+    definitions.push_str(&shockwave_blocks);
     definitions
 }
 

@@ -1,4 +1,5 @@
 use crate::config::Config;
+use crate::markdown::{BlockKind, HasGroup};
 use crate::{doctest, markdown, netlist, shockwaves, source, synthesis};
 use anyhow::Result;
 use mdbook_preprocessor::book::{Book, BookItem, Chapter};
@@ -32,17 +33,19 @@ impl Processor {
         for unit in markdown::units(&blocks) {
             doctest::run(&self.config, &path, &unit)?;
             let definitions = source::assemble(&unit);
-            let listing_link = unit[0].attrs.group.as_deref().map(|group| {
+            let listing_link = unit[0].get_group().map(|group| {
                 let anchor = format!("mdbook-clash-listing-{}", listings.len() + 1);
                 listings.push(source::listing(&anchor, group, &definitions));
                 format!("\n\n[View full listing](#{anchor})\n")
             });
 
             for block in unit {
-                let addition = if let Some(top_entity) = block.attrs.top_entity.as_deref() {
+                let BlockKind::Code(code_block) = &block.kind else { continue; };
+
+                let addition = if let Some(top_entity) = code_block.attrs.top_entity.as_deref() {
                     let output =
                         synthesis::run(&self.config, &path, block, &definitions, top_entity)?;
-                    if block.attrs.netlistsvg {
+                    if code_block.attrs.netlistsvg {
                         netlist::run(&self.config, &path, block, &output)?
                     } else {
                         String::new()
@@ -50,7 +53,7 @@ impl Processor {
                 } else {
                     String::new()
                 };
-                if block.attrs.hidden {
+                if code_block.attrs.hidden {
                     edits.push((block.start, block.end, addition));
                 } else {
                     let replacement = format!(
@@ -62,12 +65,19 @@ impl Processor {
                         edits.push((block.end, block.end, replacement));
                     }
                 }
-
-                if let Some(shockwaves) = &block.attrs.shockwaves {
-                    let output = shockwaves::run(&self.config, &path, block, shockwaves, &definitions)?;
-                    let rendered_md = shockwaves::markdown(&self.config, &output);
-                    edits.push((block.end, block.end, rendered_md));
-                }
+                // if let Some(shockwaves) = &code_block.attrs.shockwaves {
+                //     dbg!(&code_block.attrs.surfer_batch);
+                //     let output = shockwaves::run(
+                //         &self.config,
+                //         &path,
+                //         block,
+                //         shockwaves,
+                //         &block.attrs.surfer_batch,
+                //         &definitions,
+                //     )?;
+                //     let rendered_md = shockwaves::markdown(&self.config, &output);
+                //     edits.push((block.end, block.end, rendered_md));
+                // }
             }
         }
 

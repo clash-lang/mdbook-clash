@@ -2,6 +2,7 @@ use crate::cache;
 use crate::command;
 use crate::config::Config;
 use crate::markdown::Block;
+use crate::markdown::BlockKind;
 use crate::source;
 use anyhow::{Context, Result};
 use std::fs;
@@ -11,7 +12,11 @@ pub(crate) fn run(config: &Config, chapter: &Path, blocks: &[&Block]) -> Result<
     let tests = blocks
         .iter()
         .copied()
-        .filter(|block| !source::doctest(&block.code).transcript.is_empty())
+        .filter_map(|block| match &block.kind {
+            BlockKind::Code(code_block) => Some((block, code_block)),
+            BlockKind::Surfer(_) => None,
+        })
+        .filter(|(_, code_block)| !source::doctest(&code_block.code).transcript.is_empty())
         .collect::<Vec<_>>();
     if tests.is_empty() {
         return Ok(());
@@ -21,8 +26,8 @@ pub(crate) fn run(config: &Config, chapter: &Path, blocks: &[&Block]) -> Result<
     let module_name = source::module_name(&module_source);
     let documents = tests
         .iter()
-        .map(|block| {
-            let document = source::doctest(&block.code);
+        .map(|(block, code_block)| {
+            let document = source::doctest(&code_block.code);
             serde_json::json!({
                 "block": block.index,
                 "line": block.line + document.line_offset,
@@ -66,8 +71,8 @@ pub(crate) fn run(config: &Config, chapter: &Path, blocks: &[&Block]) -> Result<
     args.push(module_name);
     args.push(module_path.display().to_string());
 
-    for block in tests {
-        let document = source::doctest(&block.code);
+    for (block, code_block) in tests {
+        let document = source::doctest(&code_block.code);
         let path = directory.join(format!("doctest-{}.txt", block.index));
         fs::write(&path, document.transcript)
             .with_context(|| format!("failed to write {}", path.display()))?;

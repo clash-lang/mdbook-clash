@@ -1,10 +1,10 @@
 use crate::{
     cache, command,
     config::Config,
-    markdown::{Block, ShockwavesAttributes},
+    markdown::{Block, BlockKind, CodeBlock},
     source,
 };
-use anyhow::{Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use std::{fs, path::Path};
 
 #[derive(Debug)]
@@ -45,7 +45,7 @@ pub(crate) fn run(
     config: &Config,
     chapter: &Path,
     block: &Block,
-    shockwaves: &ShockwavesAttributes,
+    surfer_args: &[String],
     source_text: &str,
 ) -> Result<Output> {
     // Check if the shockwaves library is installed in the mdbook directory, if it is not then error
@@ -53,8 +53,14 @@ pub(crate) fn run(
     // people have different libraries installed
     if let Err(e) = std::fs::read(".surfer/translators/surfer_shockwaves.wasm") {
         let e: anyhow::Error = e.into();
-        return Err(e.context("Could not read surfer_shockwaves.wasm library file, is it installed?"))
+        return Err(
+            e.context("Could not read surfer_shockwaves.wasm library file, is it installed?")
+        );
     }
+
+    let BlockKind::Surfer(shockwaves) = &block.kind else {
+        bail!("Tried using shockwaves integration with the wrong block kind",);
+    };
 
     let cache_key = cache::key(
         config,
@@ -118,11 +124,12 @@ pub(crate) fn run(
     let surfer_args = vec![
         "-C".to_string(),
         format!(
-            "load_file {}; scope_add logic; set_time_unit none; zoom_to -1 {}; save_image {}x{} {}",
+            "load_file {}; scope_add logic; set_time_unit none; zoom_to -1 {}; {}; save_image {}x{} {}",
             shockwaves_vcd.display().to_string(),
-            shockwaves.end - shockwaves.start - 1,
-            shockwaves.resolution.0,
-            shockwaves.resolution.1,
+            shockwaves.cycle_end - shockwaves.cycle_start - 1,
+            surfer_args.join(";"),
+            shockwaves.width,
+            shockwaves.height,
             output_image.display().to_string()
         ),
         "oneshot".to_string(),

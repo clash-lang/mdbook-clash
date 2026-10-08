@@ -2,6 +2,7 @@ use crate::cache;
 use crate::command;
 use crate::config::Config;
 use crate::markdown::Block;
+use crate::markdown::BlockKind;
 use crate::synthesis;
 use anyhow::{bail, Context, Result};
 use std::fs;
@@ -13,6 +14,10 @@ pub(crate) fn run(
     block: &Block,
     synthesis: &synthesis::Output,
 ) -> Result<String> {
+    let BlockKind::Code(code_block) = &block.kind else {
+        bail!("Tried using netlist generation with the wrong block kind",);
+    };
+
     let key = cache::key(
         config,
         "netlistsvg",
@@ -20,7 +25,7 @@ pub(crate) fn run(
             "synthesis": synthesis.cache_key,
             "synthesis_output": synthesis.output_hash,
             "top_component": synthesis.top_component,
-            "yosys_commands": block.attrs.yosys,
+            "yosys_commands": code_block.attrs.yosys,
             "yosys": config.yosys_cmd,
             "yosys_fingerprint": command::fingerprint(&config.yosys_cmd)?,
             "netlistsvg": config.netlistsvg_cmd,
@@ -56,7 +61,7 @@ pub(crate) fn run(
     fs::write(
         &script_path,
         yosys_script(
-            &block.attrs.yosys,
+            &code_block.attrs.yosys,
             &verilog,
             &synthesis.top_component,
             &json_path,

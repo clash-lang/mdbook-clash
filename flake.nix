@@ -191,7 +191,9 @@
 
               echo "Installed Surfer translator in $PWD/.surfer/translators"
               echo "Copy this installation folder ('.surfer/translators') to the root of your mdbook to properly install clash-shockwaves"
+              mkdir -p .surfer
               ln -s ${clash-shockwaves.packages.${system}.surfer-shockwaves}/lib .surfer/translators
+              ln -s .surfer example-shockwave/.surfer
               echo ""
             '';
           };

@@ -1,82 +1,83 @@
 macro_rules! type_default {
-    (v<$type:ty>) => {
+    (Vec<$type:ty>) => {
         Vec<$type>
     };
-    (o<$type:ty>) => {
+    (Option<$type:ty>) => {
         Option<$type>
     };
-    (p<$type:ty>) => {
+    ($type:ty) => {
         Option<$type>
     };
 }
 
 macro_rules! type_default_argument {
-    (v<$type:ty>) => {
+    (Vec<$type:ty>) => {
         Vec<$type>
     };
-    (o<$type:ty>) => {
+    (Option<$type:ty>) => {
         Option<$type>
     };
-    (p<$type:ty>) => {
+    ($type:ty) => {
         $type
     };
 }
 
 macro_rules! type_default_constructor {
-    (v<$type:ty>, $val:expr) => {
+    (Vec<$type:ty>, $val:expr) => {
         $val
     };
-    (o<$type:ty>, $val:expr) => {
+    (Option<$type:ty>, $val:expr) => {
         $val
     };
-    (p<$type:ty>, $val:expr) => {
+    ($type:ty, $val:expr) => {
         Some($val)
     };
 }
 
 macro_rules! builder_importance {
-    ($value:ident, p, $key:ident, required($msg:literal)) => {
-        let Some($key) = $key.take() else {
-            bail!("No {:?} specified. {}", $key, $msg);
-        };
-    };
-    ($value:ident, v, $key:ident, required($msg:literal)) => {
+    ($value:ident, Vec<$type:ty>, $key:ident, required($msg:literal)) => {
         let $key = $value.$key;
         if $key.is_empty() {
             bail!("Empty list {} specified. {}", $key, $msg);
         };
     };
-    ($value:ident, p, $key:ident, warn($msg:literal)) => {
-        compile_error!("Cannot have warnings on p values, prefix with o instead");
-    };
-    ($value:ident, v, $key:ident, warn($msg:literal)) => {
+    ($value:ident, Vec<$type:ty>, $key:ident, warn($msg:literal)) => {
         if $key.is_empty() {
             log::warn!(target: "surfer-integration", "Empty list {:?} specified. {}", $key, $msg)
         };
     };
-    ($value:ident, o, $key:ident, required($msg:literal)) => {
-        compile_error!("Cannot force option on o values, prefix with p instead");
+    ($value:ident, Option<$type:ty>, $key:ident, required($msg:literal)) => {
+        compile_error!("Cannot force option on optional values, remove the Option instead");
     };
-    ($value:ident, o, $key:ident, warn($msg:literal)) => {
+    ($value:ident, Option<$type:ty>, $key:ident, warn($msg:literal)) => {
         if $key.is_none() else {
             log::warn!("No {:?} specified. {}", $key, $msg);
         };
     };
+    ($value:ident, $type:ty, $key:ident, warn($msg:literal)) => {
+        compile_error!("Cannot have warnings on non-optional values, use a type with Option instead");
+    };
+    ($value:ident, $type:ty, $key:ident, required($msg:literal)) => {
+        let Some($key) = $key.take() else {
+            bail!("No {:?} specified. {}", $key, $msg);
+        };
+    };
+    ($value:ident, $type:ty, $key:ident, ) => {};
 }
 
 macro_rules! auto_builder {
-    ($name:ident <- $builder:ident ($propenum:ident) = $($var:ident: $prefix:ident<$type:ty> $($importance:ident($msg:literal))? ),*) => {
+    ($name:ident <- $builder:ident ($propenum:ident) = $($var:ident ($($type:tt)+) $($importance:ident($msg:literal))? ),*) => {
         #[derive(Clone, Debug, Default, Serialize)]
         pub(crate) struct $name {
             $(
-                pub $var: type_default_argument!($prefix<$type>),
+                pub $var: type_default_argument!($($type)+),
             )*
         }
 
         #[derive(Clone, Debug, Default, Serialize)]
         pub(crate) struct $builder {
             $(
-                pub $var: type_default!($prefix<$type>),
+                pub $var: type_default!($($type)+),
             )*
         }
 
@@ -106,8 +107,8 @@ macro_rules! auto_builder {
         paste! {
             impl $builder {
                 $(
-                    pub fn [<with_ $var>](mut self, value: type_default_argument!($prefix<$type>)) -> Self {
-                        self.$var = type_default_constructor!($prefix<$type>, value);
+                    pub fn [<with_ $var>](mut self, value: type_default_argument!($($type)+)) -> Self {
+                        self.$var = type_default_constructor!($($type)+, value);
                         self
                     }
                 )*
@@ -124,9 +125,9 @@ macro_rules! auto_builder {
                 )*
 
                 $(
-                    $(
-                        builder_importance!(value, $prefix, $var, $importance($msg));
-                    )?
+                    // $(
+                        builder_importance!(value, $($type)+, $var, $( $importance($msg) )?);
+                    // )?
                 )*
 
                 Ok(Self {

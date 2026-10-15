@@ -1,9 +1,9 @@
-use anyhow::{anyhow, bail, Context, Result};
-use pulldown_cmark::{CodeBlockKind, Event, Parser, Tag, TagEnd};
-use std::collections::HashMap;
-use serde::Serialize;
-use paste::paste;
 use crate::builder_gen::*;
+use anyhow::{anyhow, bail, Context, Result};
+use paste::paste;
+use pulldown_cmark::{CodeBlockKind, Event, Parser, Tag, TagEnd};
+use serde::Serialize;
+use std::collections::HashMap;
 
 #[derive(Clone, Debug)]
 pub(crate) struct CodeBlock {
@@ -68,18 +68,40 @@ pub(crate) struct Attributes {
 
 auto_builder!(
     SurferBlock <- SurferBlockBuilder (SurferBlockProperty) =
-        group: p<String> required("Do not know from what code block to monitor signals"),
-        cycle_start: p<u32> required("Do not know which cycle to start simulation from"),
-        cycle_end: p<u32> required("Do not know which cycle to end simulation at"),
-        width: p<u32> required("Do not know image width"),
-        height: p<u32> required("Do not know image height"),
-        signals: v<String> warn("No signals specified to monitor, an empty image will be generated"),
-        surfer_batch: v<String>
+        group (String) required("Do not know from what code block to monitor signals"),
+        cycle_start (u32) required("Do not know which cycle to start simulation from"),
+        cycle_end (u32) required("Do not know which cycle to end simulation at"),
+        width (u32) required("Do not know image width"),
+        height (u32) required("Do not know image height"),
+        signals (Vec<String>) warn("No signals specified to monitor, an empty image will be generated"),
+        surfer_batch (Vec<String>)
 );
 
 impl SurferBlockBuilder {
     fn new() -> Self {
         Self::default()
+    }
+}
+
+#[derive(Debug)]
+enum SurferBlockParser {
+    None,
+    Builder(SurferBlockBuilder),
+    Final(SurferBlock),
+}
+
+impl SurferBlockParser {
+    fn map_builder<F>(self, mapper: F) -> anyhow::Result<Self>
+    where
+        F: FnOnce(SurferBlockBuilder) -> anyhow::Result<SurferBlockBuilder>,
+    {
+        match self {
+            SurferBlockParser::None => Ok(self),
+            SurferBlockParser::Builder(surfer_block_builder) => {
+                Ok(Self::Builder(mapper(surfer_block_builder)?))
+            }
+            SurferBlockParser::Final(_) => Ok(self),
+        }
     }
 }
 
@@ -218,42 +240,15 @@ pub(crate) fn units(blocks: &[Block]) -> Vec<Vec<&Block>> {
     units
 }
 
-#[derive(Debug)]
-enum SurferBlockParser {
-    None,
-    Builder(SurferBlockBuilder),
-    Final(SurferBlock),
-}
-
-impl SurferBlockParser {
-    fn map_builder<F>(self, mapper: F) -> anyhow::Result<Self>
-    where
-        F: FnOnce(SurferBlockBuilder) -> anyhow::Result<SurferBlockBuilder>,
-    {
-        match self {
-            SurferBlockParser::None => Ok(self),
-            SurferBlockParser::Builder(surfer_block_builder) => {
-                Ok(Self::Builder(mapper(surfer_block_builder)?))
-            }
-            SurferBlockParser::Final(_) => Ok(self),
-        }
-    }
-}
-
 fn surfer_block(
     item: &str,
     surfer_integration: SurferBlockParser,
 ) -> anyhow::Result<SurferBlockParser> {
     surfer_integration.map_builder(|builder| {
-        enum SurferBlockProperty {
-            Group(String),
-            CycleEnd(u32),
-            CycleStart(u32),
-            Width(u32),
-            Height(u32),
-            Signals(Vec<String>),
-            Batch(Vec<String>),
-        }
+        let (property, value) = match item.split_once("=").map(|(a, b)| (a.trim(), b.trim())) {
+            Some((key, value)) => (SurferBlockProperty::try_from(key)?, value),
+            None => bail!("Non-property being set in <surfer> block"),
+        };
 
         macro_rules! parse_u32 {
             ($prop:literal, $value:expr) => {
@@ -266,38 +261,20 @@ fn surfer_block(
             };
         }
 
-        let property = match item.split_once("=").map(|(a, b)| (a.trim(), b.trim())) {
-            Some(("group", value)) => SurferBlockProperty::Group(value.trim().to_string()),
-            Some(("cycle_start", value)) => {
-                SurferBlockProperty::CycleStart(parse_u32!("cycle_start", value))
-            }
-            Some(("cycle_end", value)) => {
-                SurferBlockProperty::CycleEnd(parse_u32!("cycle_end", value))
-            }
-            Some(("width", value)) => SurferBlockProperty::Width(parse_u32!("width", value)),
-            Some(("height", value)) => SurferBlockProperty::Height(parse_u32!("height", value)),
-            Some(("signals", value)) => SurferBlockProperty::Signals(
-                value.split(",").map(|s| s.trim().to_string()).collect(),
-            ),
-            Some(("surfer_batch", value)) => {
-                SurferBlockProperty::Batch(value.split(",").map(|s| s.trim().to_string()).collect())
-            }
-            Some((key, value)) => {
-                bail!("Unrecognized property '{key}' in <surfer> block (value: {value})");
-            }
-            _ => {
-                bail!("Non-property being set in <surfer> block");
-            }
-        };
-
         Ok(match property {
-            SurferBlockProperty::Group(group) => builder.with_group(group),
-            SurferBlockProperty::CycleEnd(end) => builder.with_cycle_end(end),
-            SurferBlockProperty::CycleStart(start) => builder.with_cycle_start(start),
-            SurferBlockProperty::Width(n) => builder.with_width(n),
-            SurferBlockProperty::Height(n) => builder.with_height(n),
-            SurferBlockProperty::Signals(items) => builder.with_signals(items),
-            SurferBlockProperty::Batch(items) => builder.with_surfer_batch(items),
+            SurferBlockProperty::Group => builder.with_group(value.to_string()),
+            SurferBlockProperty::CycleStart => {
+                builder.with_cycle_start(parse_u32!("cycle_start", value))
+            }
+            SurferBlockProperty::CycleEnd => builder.with_cycle_end(parse_u32!("cycle_end", value)),
+            SurferBlockProperty::Width => builder.with_width(parse_u32!("width", value)),
+            SurferBlockProperty::Height => builder.with_height(parse_u32!("height", value)),
+            SurferBlockProperty::Signals => {
+                builder.with_signals(value.split(",").map(|s| s.trim().to_string()).collect())
+            }
+            SurferBlockProperty::SurferBatch => {
+                builder.with_surfer_batch(value.split(",").map(|s| s.trim().to_string()).collect())
+            }
         })
     })
 }

@@ -74,7 +74,8 @@ auto_builder!(
         width (u32) required("Do not know image width"),
         height (u32) required("Do not know image height"),
         signals (Vec<String>) warn("No signals specified to monitor, an empty image will be generated"),
-        surfer_batch (Vec<String>)
+        surfer_batch (Vec<String>),
+        override_default_style (Option<bool>)
 );
 
 impl SurferBlockBuilder {
@@ -261,6 +262,18 @@ fn surfer_block(
             };
         }
 
+        macro_rules! parse_bool {
+            ($prop:literal, $value:expr) => {
+                match $value {
+                    "true" => Some(true),
+                    "false" => Some(false),
+                    _ => {
+                        bail!(concat!($prop, " property is not a true/false"));
+                    }
+                }
+            };
+        }
+
         Ok(match property {
             SurferBlockProperty::Group => builder.with_group(value.to_string()),
             SurferBlockProperty::CycleStart => {
@@ -274,6 +287,9 @@ fn surfer_block(
             }
             SurferBlockProperty::SurferBatch => {
                 builder.with_surfer_batch(value.split(",").map(|s| s.trim().to_string()).collect())
+            }
+            SurferBlockProperty::OverrideDefaultStyle => {
+                builder.with_override_default_style(parse_bool!("override_default_style", value))
             }
         })
     })

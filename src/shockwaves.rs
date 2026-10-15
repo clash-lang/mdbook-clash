@@ -77,6 +77,8 @@ pub(crate) fn run(
     let _lock = cache::lock(&directory)?;
     let bin_dir = directory.join("bin");
     let shockwaves_vcd = bin_dir.join("waveform.vcd");
+    // TODO: we don't do much of anything with the json, although the plugin needs it
+    // Maybe we should add a check to see if it's there?
     let shockwaves_json = bin_dir.join("waveform.json");
     let image_dir = directory.join("images");
     let output_image = image_dir.join("render.png");
@@ -118,11 +120,15 @@ pub(crate) fn run(
         "-o".to_string(),
         bin_exec.display().to_string(),
     ]);
+    let default_styling = "scope_add_recursive logic; item_compound_unfold_all; set_time_unit none; variable_list_width 150; set_visible_variable_values false";
     let surfer_args = vec![
         "-C".to_string(),
         format!(
-            "load_file {}; scope_add_recursive logic; item_compound_unfold_all; set_time_unit none; variable_list_width 150; set_visible_variable_values false; zoom_to -1 {}; {}; save_image {}x{} {}",
+            "load_file {}; {}; zoom_to -1 {}; {}; save_image {}x{} {}",
             shockwaves_vcd.display().to_string(),
+            (shockwaves.override_default_style == Some(true))
+                .then_some("")
+                .unwrap_or(default_styling),
             shockwaves.cycle_end - shockwaves.cycle_start - 1,
             shockwaves.surfer_batch.join(";"),
             shockwaves.width,

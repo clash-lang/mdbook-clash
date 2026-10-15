@@ -2,7 +2,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use pulldown_cmark::{CodeBlockKind, Event, Parser, Tag, TagEnd};
 use std::collections::HashMap;
 use serde::Serialize;
-use concat_idents::concat_idents;
+use paste::paste;
 use crate::builder_gen::*;
 
 #[derive(Clone, Debug)]
@@ -67,7 +67,7 @@ pub(crate) struct Attributes {
 }
 
 auto_builder!(
-    SurferBlock <- SurferBlockBuilder =
+    SurferBlock <- SurferBlockBuilder (SurferBlockProperty) =
         group: p<String> required("Do not know from what code block to monitor signals"),
         cycle_start: p<u32> required("Do not know which cycle to start simulation from"),
         cycle_end: p<u32> required("Do not know which cycle to end simulation at"),

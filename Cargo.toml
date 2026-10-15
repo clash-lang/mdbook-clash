@@ -8,11 +8,11 @@ description = "An mdBook preprocessor for checked Clash examples"
 [dependencies]
 anyhow = "1"
 blake3 = "1"
-concat-idents = "1.1.5"
 env_logger = "0.10"
 fs2 = "0.4"
 log = "0.4"
 mdbook-preprocessor = { version = "=0.5.2", default-features = false }
+paste = "1.0.15"
 pulldown-cmark = "0.12"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

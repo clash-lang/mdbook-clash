@@ -65,7 +65,7 @@ macro_rules! builder_importance {
 }
 
 macro_rules! auto_builder {
-    ($name:ident <- $builder:ident = $($var:ident: $prefix:ident<$type:ty> $($importance:ident($msg:literal))? ),*) => {
+    ($name:ident <- $builder:ident ($propenum:ident) = $($var:ident: $prefix:ident<$type:ty> $($importance:ident($msg:literal))? ),*) => {
         #[derive(Clone, Debug, Default, Serialize)]
         pub(crate) struct $name {
             $(
@@ -80,15 +80,38 @@ macro_rules! auto_builder {
             )*
         }
 
-        impl $builder {
-            $(
-                concat_idents!(fn_name = with_, $var {
-                    pub fn fn_name(mut self, value: type_default_argument!($prefix<$type>)) -> Self {
+        paste! {
+            pub(crate) enum $propenum {
+                $(
+                    [<$var:camel>],
+                )*
+            }
+        }
+
+        paste! {
+            impl TryFrom<&str> for $propenum {
+                type Error = anyhow::Error;
+
+                fn try_from(value: &str) -> Result<Self, Self::Error> {
+                    match value {
+                        $(
+                            stringify!($var) => Ok(Self::[<$var:camel>]),
+                        )*
+                        _ => bail!(stringify!("String does not match any of the following: ", $($var, )*))
+                    }
+                }
+            }
+        }
+
+        paste! {
+            impl $builder {
+                $(
+                    pub fn [<with_ $var>](mut self, value: type_default_argument!($prefix<$type>)) -> Self {
                         self.$var = type_default_constructor!($prefix<$type>, value);
                         self
                     }
-                });
-            )*
+                )*
+            }
         }
 
         impl TryFrom<$builder> for $name {

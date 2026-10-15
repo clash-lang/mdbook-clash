@@ -248,11 +248,11 @@
         "nixpkgs": "nixpkgs_2"
       },
       "locked": {
-        "lastModified": 1790257619,
-        "narHash": "sha256-JsD7tYnx6wqV8rdkFrPpIqV3diw9gPd61c/KUp1DzV0=",
+        "lastModified": 1791543362,
+        "narHash": "sha256-PII1tj2ldth0dWeC6WveSz8ilMaJJ7TP7e5UsOQSrVk=",
         "owner": "jaschutte1",
         "repo": "surfer",
-        "rev": "4e6f696d6712033622f92a4035d27b805ca519e4",
+        "rev": "a6018a05f4246568349a49e947776ae1d643ecbb",
         "type": "gitlab"
       },
       "original": {

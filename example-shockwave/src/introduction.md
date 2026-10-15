@@ -33,9 +33,9 @@ Oh hey look at that!
     cycle_start = 0
     cycle_end = 10
     width = 800
-    height = 100
+    height = 150
     signals = incrementing, decrementing, constant_signal
-    surfer_batch = hi,hallo,good bye
 </surfer>
 
+That's an image!
 

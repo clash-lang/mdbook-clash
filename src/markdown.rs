@@ -1,7 +1,9 @@
 use anyhow::{anyhow, bail, Context, Result};
 use pulldown_cmark::{CodeBlockKind, Event, Parser, Tag, TagEnd};
-use serde::Serialize;
 use std::collections::HashMap;
+use serde::Serialize;
+use concat_idents::concat_idents;
+use crate::builder_gen::*;
 
 #[derive(Clone, Debug)]
 pub(crate) struct CodeBlock {
@@ -64,100 +66,20 @@ pub(crate) struct Attributes {
     pub hidden: bool,
 }
 
-#[derive(Clone, Debug, Default, Serialize)]
-pub(crate) struct SurferBlock {
-    pub group: String,
-    pub cycle_start: u32,
-    pub cycle_end: u32,
-    pub width: u32,
-    pub height: u32,
-    pub signals: Vec<String>,
-    pub surfer_batch: Vec<String>,
-}
-
-#[derive(Clone, Debug, Default)]
-pub(crate) struct SurferBlockBuilder {
-    pub group: Option<String>,
-    pub cycle_start: Option<u32>,
-    pub cycle_end: Option<u32>,
-    pub width: Option<u32>,
-    pub height: Option<u32>,
-    pub signals: Vec<String>,
-    pub surfer_batch: Vec<String>,
-}
+auto_builder!(
+    SurferBlock <- SurferBlockBuilder =
+        group: p<String> required("Do not know from what code block to monitor signals"),
+        cycle_start: p<u32> required("Do not know which cycle to start simulation from"),
+        cycle_end: p<u32> required("Do not know which cycle to end simulation at"),
+        width: p<u32> required("Do not know image width"),
+        height: p<u32> required("Do not know image height"),
+        signals: v<String> warn("No signals specified to monitor, an empty image will be generated"),
+        surfer_batch: v<String>
+);
 
 impl SurferBlockBuilder {
     fn new() -> Self {
         Self::default()
-    }
-
-    fn with_group(mut self, group: String) -> Self {
-        self.group = Some(group);
-        self
-    }
-
-    fn with_cycle_end(mut self, cycle_end: u32) -> Self {
-        self.cycle_end = Some(cycle_end);
-        self
-    }
-
-    fn with_cycle_start(mut self, cycle_start: u32) -> Self {
-        self.cycle_start = Some(cycle_start);
-        self
-    }
-
-    fn with_width(mut self, width: u32) -> Self {
-        self.width = Some(width);
-        self
-    }
-
-    fn with_height(mut self, height: u32) -> Self {
-        self.height = Some(height);
-        self
-    }
-
-    fn with_signals(mut self, signals: Vec<String>) -> Self {
-        self.signals = signals;
-        self
-    }
-
-    fn with_surfer_batch(mut self, surfer_batch: Vec<String>) -> Self {
-        self.surfer_batch = surfer_batch;
-        self
-    }
-}
-
-impl TryFrom<SurferBlockBuilder> for SurferBlock {
-    type Error = anyhow::Error;
-
-    fn try_from(mut value: SurferBlockBuilder) -> std::prelude::v1::Result<Self, Self::Error> {
-        let Some(group) = value.group.take() else {
-            bail!("No group specified, do not know what code group to grab signals from");
-        };
-        let Some(width) = value.width.take() else {
-            bail!("No width specified, do not know what resolution to generate the image at");
-        };
-        let Some(height) = value.height.take() else {
-            bail!("No height specified, do not know what resolution to generate the image at",);
-        };
-        let Some(cycle_start) = value.cycle_start.take() else {
-            bail!("No cycle_start specified, do not know which cycle to start the simulation from",);
-        };
-        let Some(cycle_end) = value.cycle_end.take() else {
-            bail!("No cycle_end, do not know which cycle to end the simulation");
-        };
-        if value.signals.is_empty() {
-            log::warn!(target: "surfer-integration", "No signals specified to monitor, an empty image will be generated")
-        }
-        Ok(SurferBlock {
-            group,
-            cycle_start,
-            cycle_end,
-            width,
-            height,
-            signals: value.signals,
-            surfer_batch: value.surfer_batch,
-        })
     }
 }
 
@@ -212,11 +134,8 @@ pub(crate) fn blocks(content: &str, source: &str) -> Result<Vec<Block>> {
                     .filter(|byte| *byte == b'\n')
                     .count();
 
-                surfer_integration = current_state.map_err(|e| {
-                    e.context(format!(
-                        "at {source}:{line}:1",
-                    ))
-                })?;
+                surfer_integration =
+                    current_state.map_err(|e| e.context(format!("at {source}:{line}:1",)))?;
 
                 if let SurferBlockParser::Final(surfer_block) = surfer_integration {
                     let Some(start) = surfer_start else {
@@ -347,31 +266,25 @@ fn surfer_block(
             };
         }
 
-        let property = match item.split_once("=").map(|(a,b)| (a.trim(), b.trim())) {
-            Some(("group", value)) => {
-                SurferBlockProperty::Group(value.trim().to_string())
-            }
+        let property = match item.split_once("=").map(|(a, b)| (a.trim(), b.trim())) {
+            Some(("group", value)) => SurferBlockProperty::Group(value.trim().to_string()),
             Some(("cycle_start", value)) => {
                 SurferBlockProperty::CycleStart(parse_u32!("cycle_start", value))
             }
             Some(("cycle_end", value)) => {
                 SurferBlockProperty::CycleEnd(parse_u32!("cycle_end", value))
             }
-            Some(("width", value)) => {
-                SurferBlockProperty::Width(parse_u32!("width", value))
-            }
-            Some(("height", value)) => {
-                SurferBlockProperty::Height(parse_u32!("height", value))
-            }
+            Some(("width", value)) => SurferBlockProperty::Width(parse_u32!("width", value)),
+            Some(("height", value)) => SurferBlockProperty::Height(parse_u32!("height", value)),
             Some(("signals", value)) => SurferBlockProperty::Signals(
                 value.split(",").map(|s| s.trim().to_string()).collect(),
             ),
-            Some(("surfer_batch", value)) => SurferBlockProperty::Batch(
-                value.split(",").map(|s| s.trim().to_string()).collect(),
-            ),
+            Some(("surfer_batch", value)) => {
+                SurferBlockProperty::Batch(value.split(",").map(|s| s.trim().to_string()).collect())
+            }
             Some((key, value)) => {
                 bail!("Unrecognized property '{key}' in <surfer> block (value: {value})");
-            },
+            }
             _ => {
                 bail!("Non-property being set in <surfer> block");
             }
@@ -380,15 +293,13 @@ fn surfer_block(
         Ok(match property {
             SurferBlockProperty::Group(group) => builder.with_group(group),
             SurferBlockProperty::CycleEnd(end) => builder.with_cycle_end(end),
-            SurferBlockProperty::CycleStart(start) => {
-                builder.with_cycle_start(start)
-            }
+            SurferBlockProperty::CycleStart(start) => builder.with_cycle_start(start),
             SurferBlockProperty::Width(n) => builder.with_width(n),
             SurferBlockProperty::Height(n) => builder.with_height(n),
             SurferBlockProperty::Signals(items) => builder.with_signals(items),
             SurferBlockProperty::Batch(items) => builder.with_surfer_batch(items),
         })
-            })
+    })
 }
 
 fn attributes(info: &str) -> Result<Option<Attributes>> {

@@ -121,7 +121,7 @@ pub(crate) fn run(
     let surfer_args = vec![
         "-C".to_string(),
         format!(
-            "load_file {}; scope_add logic; set_time_unit none; zoom_to -1 {}; {}; save_image {}x{} {}",
+            "load_file {}; scope_add_recursive logic; item_compound_unfold_all; set_time_unit none; variable_list_width 150; set_visible_variable_values false; zoom_to -1 {}; {}; save_image {}x{} {}",
             shockwaves_vcd.display().to_string(),
             shockwaves.cycle_end - shockwaves.cycle_start - 1,
             shockwaves.surfer_batch.join(";"),

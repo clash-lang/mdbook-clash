@@ -8,6 +8,7 @@ description = "An mdBook preprocessor for checked Clash examples"
 [dependencies]
 anyhow = "1"
 blake3 = "1"
+concat-idents = "1.1.5"
 env_logger = "0.10"
 fs2 = "0.4"
 log = "0.4"

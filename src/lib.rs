@@ -8,6 +8,7 @@ mod processor;
 mod source;
 mod synthesis;
 mod shockwaves;
+mod builder_gen;
 
 use anyhow::Result;
 use config::Config;
